@@ -33,7 +33,14 @@ const yen = (v) => (v == null ? "" : Number(v).toLocaleString());
 async function getJSON(path) {
   const res = await fetch(path);
   if (!res.ok) throw new Error(`${path} が読めませんでした (${res.status})`);
-  return res.json();
+  // 無い URL には index.html が 200 で返ってくる (SPA のフォールバック) ので、
+  // JSON として読めなかったら「その日のデータが無い」として扱う。
+  // そのまま res.json() を投げると生の構文エラーが画面に出てしまう。
+  try {
+    return await res.json();
+  } catch {
+    throw new Error("その日のデータはありません（開催が無い日かもしれません）");
+  }
 }
 
 async function loadIndex() {
