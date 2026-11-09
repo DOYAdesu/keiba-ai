@@ -305,6 +305,59 @@ def parse_race_extras(html):
 
 RACE_EXTRA_COLS = ("lap", "pace_s3", "pace_l3", "corner3", "corner4")
 
+# 組番を JRA-VAN の払戻データと同じ形に揃えるための規則
+# (着順どおりに並べる券種と、昇順に並べる券種、枠番は1桁)
+_ORDERED_BETS = {"馬単", "三連単"}
+_PAY_BET_TYPES = {"単勝", "複勝", "枠連", "馬連", "ワイド", "馬単", "三連複", "三連単"}
+
+
+def _norm_combo(bet_type, text):
+    nums = [int(n) for n in re.findall(r"\d+", text)]
+    if not nums:
+        return None
+    if bet_type not in _ORDERED_BETS:
+        nums = sorted(nums)
+    width = 1 if bet_type == "枠連" else 2
+    return "".join(f"{n:0{width}d}" for n in nums)
+
+
+def parse_payouts(html):
+    """払戻表 (pay_table_01) を [(券種, 組番, 払戻金, 人気)] にする。
+
+    複勝・ワイドは1行に複数の組が「|」区切りで入っているので展開する。
+    組番は JRA-VAN と同じ形式 (2桁ゼロ埋め、順不同の券種は昇順)。
+    """
+    soup = BeautifulSoup(html, "lxml")
+    out = []
+    for tb in soup.select("table.pay_table_01"):
+        for tr in tb.find_all("tr"):
+            th, tds = tr.find("th"), tr.find_all("td")
+            if th is None or len(tds) < 2:
+                continue
+            bet_type = th.get_text(strip=True)
+            if bet_type not in _PAY_BET_TYPES:
+                continue
+            combos = [s for s in tds[0].get_text("|", strip=True).split("|") if s]
+            pays = [s for s in tds[1].get_text("|", strip=True).split("|") if s]
+            ninki = ([s for s in tds[2].get_text("|", strip=True).split("|") if s]
+                     if len(tds) > 2 else [])
+            for i, (c, p) in enumerate(zip(combos, pays)):
+                combo = _norm_combo(bet_type, c)
+                pay = re.sub(r"[^\d]", "", p)
+                if not combo or not pay:
+                    continue
+                pop = re.sub(r"[^\d]", "", ninki[i]) if i < len(ninki) else ""
+                out.append((bet_type, combo, int(pay), int(pop) if pop else None))
+    return out
+
+
+def save_payouts(conn, race_id, payouts):
+    if payouts:
+        conn.executemany(
+            "INSERT OR REPLACE INTO payouts VALUES (?, ?, ?, ?, ?)",
+            [(race_id, t, c, p, n) for t, c, p, n in payouts],
+        )
+
 
 def save_race_extras(conn, race_id, info, extras):
     """races テーブルにレース単位の情報を入れる (無ければ作る)。"""
@@ -385,29 +438,85 @@ def save_race(conn, info, rows):
     conn.commit()
 
 
+# 「無かった」記録を信じる日数。これを過ぎたら確かめ直す。
+# 開催前に見たレースや、結果ページの反映前に見たレースは
+# 後から現れるので、永久に無いことにしてはいけない。
+NONE_TTL_DAYS = 2
+
+
+def _none_is_fresh(checked_at):
+    if not checked_at:
+        return False  # 時刻の記録が無い古い印は確かめ直す
+    try:
+        t = dt.datetime.fromisoformat(checked_at)
+    except ValueError:
+        return False
+    return (dt.datetime.now() - t).days < NONE_TTL_DAYS
+
+
 def scrape_race(conn, race_id):
     """1レース取得。返り値: 'saved' / 'skip'(取得済) / 'none'(存在しない)
 
     status は 'ok'(旧: 通過・上り無し) / 'ok2'(現行) / 'none' の3種。
+    'none' は NONE_TTL_DAYS 日だけ信じ、過ぎたら取り直す。
     """
-    cur = conn.execute("SELECT status FROM scraped WHERE race_id=?", (race_id,))
-    hit = cur.fetchone()
+    hit = conn.execute(
+        "SELECT status, checked_at FROM scraped WHERE race_id=?", (race_id,)
+    ).fetchone()
     if hit:
-        return "skip" if hit[0] in ("ok", "ok2") else "none"
+        if hit[0] in ("ok", "ok2"):
+            return "skip"
+        if _none_is_fresh(hit[1]):
+            return "none"
 
     html = fetch_html(RACE_URL.format(race_id=race_id))
     parsed = parse_race_page(html, race_id) if html else None
+    now = dt.datetime.now().isoformat(timespec="seconds")
     if parsed is None:
-        conn.execute("INSERT OR REPLACE INTO scraped VALUES (?, 'none')", (race_id,))
+        conn.execute(
+            "INSERT OR REPLACE INTO scraped (race_id, status, checked_at) "
+            "VALUES (?, 'none', ?)", (race_id, now))
         conn.commit()
         return "none"
 
     info, rows = parsed
     save_race(conn, info, rows)
     save_race_extras(conn, race_id, info, parse_race_extras(html))
-    conn.execute("INSERT OR REPLACE INTO scraped VALUES (?, 'ok2')", (race_id,))
+    save_payouts(conn, race_id, parse_payouts(html))
+    conn.execute(
+        "INSERT OR REPLACE INTO scraped (race_id, status, checked_at) "
+        "VALUES (?, 'ok2', ?)", (race_id, now))
     conn.commit()
     return "saved"
+
+
+def backfill_payouts(limit=300, since="2026-08-27", db_path=DB_PATH):
+    """払戻が無い取得済みレースだけページを取り直して払戻を足す。
+
+    JRA-VAN が使えない期間は払戻を netkeiba から取るしかない。
+    一度に取りすぎるとブロックされるので limit 件で区切り、
+    自動更新のたびに少しずつ進める。
+    """
+    conn = connect(db_path)
+    try:
+        ids = [r[0] for r in conn.execute(
+            "SELECT DISTINCT r.race_id FROM results r "
+            "WHERE r.is_nar=0 AND r.date>=? AND NOT EXISTS "
+            "(SELECT 1 FROM payouts p WHERE p.race_id=r.race_id) "
+            "ORDER BY r.date DESC LIMIT ?", (since, limit))]
+        yield f"払戻が未取得のレース: {len(ids)}件 (最大{limit}件ずつ)"
+        done = 0
+        for i, rid in enumerate(ids, 1):
+            html = fetch_html(RACE_URL.format(race_id=rid))
+            pays = parse_payouts(html) if html else []
+            if pays:
+                save_payouts(conn, rid, pays)
+                conn.commit()
+                done += 1
+            if i % 25 == 0 or i == len(ids):
+                yield f"払戻 {i}/{len(ids)} (取得 {done}件)"
+    finally:
+        conn.close()
 
 
 def race_exists(conn, race_id):
@@ -576,6 +685,10 @@ def main():
     p.add_argument("--limit", type=int, help="先頭N件だけ処理する")
     p.add_argument("--all", action="store_true", help="地方競馬も対象にする")
 
+    p = sub.add_parser("payouts", help="払戻が無いレースに netkeiba の払戻を補完")
+    p.add_argument("--limit", type=int, default=300)
+    p.add_argument("--since", default="2026-08-27")
+
     args = ap.parse_args()
     if args.cmd == "jra":
         gen = collect_jra(args.year_from, args.year_to, args.places)
@@ -589,6 +702,8 @@ def main():
         gen = collect_pedigree()
     elif args.cmd == "backfill":
         gen = backfill(limit=args.limit, jra_only=not args.all)
+    elif args.cmd == "payouts":
+        gen = backfill_payouts(limit=args.limit, since=args.since)
     else:
         gen = refresh_v1_races()
     try:

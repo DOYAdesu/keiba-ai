@@ -68,9 +68,16 @@ def _normalize(x):
     return x / total if total > 0 else x
 
 
-def _calibrate(p, threshold):
-    """生の推定を実配当に合わせる (ロジスティック較正)。"""
-    ab = CALIBRATION.get(threshold)
+def calibrate(p, threshold, calib=None):
+    """生の推定を実配当に合わせる (ロジスティック較正)。
+
+    calib は {しきい値: (a, b)}。しきい値のキーは文字列でも数値でもよい
+    (site_meta に JSON で入れると文字列になる)。
+    """
+    if p is None:
+        return None
+    table = CALIBRATION if calib is None else calib
+    ab = table.get(threshold, table.get(str(threshold)))
     if ab is None:
         return p
     a, b = ab
@@ -78,17 +85,44 @@ def _calibrate(p, threshold):
     return float(1.0 / (1.0 + np.exp(-(a * np.log(p / (1 - p)) + b))))
 
 
-def payout_probs(model_p, odds, thresholds=(100_000, 1_000_000)):
+def fit_calibration(raw, hit):
+    """生の確率と実際の当たり外れから (a, b) を最小二乗 (IRLS) で求める。"""
+    raw = np.clip(np.asarray(raw, dtype=float), 1e-6, 1 - 1e-6)
+    y = np.asarray(hit, dtype=float)
+    x = np.log(raw / (1 - raw))
+    X = np.column_stack([x, np.ones_like(x)])
+    w = np.zeros(2)
+    for _ in range(50):
+        z = X @ w
+        p = 1.0 / (1.0 + np.exp(-z))
+        g = X.T @ (p - y)
+        s = np.clip(p * (1 - p), 1e-9, None)
+        H = X.T @ (X * s[:, None]) + 1e-6 * np.eye(2)
+        step = np.linalg.solve(H, g)
+        w -= step
+        if np.abs(step).max() < 1e-9:
+            break
+    return float(w[0]), float(w[1])
+
+
+def payout_probs(model_p, odds, thresholds=(100_000, 1_000_000), calib=None,
+                 with_payout=True):
     """各しきい値以上の配当が出る確率と、推定の最高配当を返す。
 
     model_p: モデルの勝率 (レース内で正規化されていなくてよい)
     odds:    単勝オッズ
+    calib:   {しきい値: (a, b)} の較正係数。省略すると CALIBRATION
+    with_payout: False にすると最高配当を出さない (オッズを作り物で
+             埋めている場合、最高配当は「打ち切りの位置」しか表さないので)
+
+    raw_<しきい値> に較正前の生の確率も入れて返す (較正を学習し直すのに使う)。
     """
     model_p = np.asarray(model_p, dtype=float)
     odds = np.asarray(odds, dtype=float)
     ok = np.isfinite(model_p) & np.isfinite(odds) & (odds > 0)
     if ok.sum() < 4:
-        return {t: None for t in thresholds} | {"max_payout": None}
+        return ({t: None for t in thresholds} | {"max_payout": None}
+                | {f"raw_{t}": None for t in thresholds})
 
     market = _normalize(1.0 / odds[ok])
     # 的中側はモデルと市場の混合。配当側は投票割合そのものなので市場だけ
@@ -98,14 +132,16 @@ def payout_probs(model_p, odds, thresholds=(100_000, 1_000_000)):
     q_market = trifecta_probs(market)
 
     payout = TAKEOUT / np.maximum(q_market, 1e-12) * BET_UNIT
-    out = {t: _calibrate(float(q_outcome[payout >= t].sum()), t)
-           for t in thresholds}
+    raw = {t: float(q_outcome[payout >= t].sum()) for t in thresholds}
+    out = {t: calibrate(raw[t], t, calib) for t in thresholds}
+    out |= {f"raw_{t}": raw[t] for t in thresholds}
 
     # 「来る可能性がそれなりにある組み合わせ」での最高配当。
     # 万馬券の上限は青天井なので、確率の薄すぎる組み合わせは除く。
     plausible = q_outcome >= 1e-4
     out["max_payout"] = (
-        float(payout[plausible].max()) if plausible.any() else None
+        float(payout[plausible].max())
+        if with_payout and plausible.any() else None
     )
     return out
 

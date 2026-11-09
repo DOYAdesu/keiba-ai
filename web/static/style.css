@@ -213,6 +213,35 @@ body.sp .racehead, body.narrow .racehead { flex-direction: column; align-items: 
   body:not(.pc) nav.tabs a { padding: 11px 2px; font-size: 13px; }
 }
 
+/* --- 推奨表の根拠は読みやすい幅で折り返す --- */
+td.reason { min-width: 280px; font-size: 12px; line-height: 1.5; }
+
+/* --- 絞り込みボタン (能力指数の場) --- */
+.rlinks.pills a.cur { background: var(--navy); color: #fff; border-color: var(--navy); }
+th a.sorted { color: var(--text); text-decoration: underline; }
+
+/* --- ゲーム --- */
+.scoreboard {
+  display: flex; align-items: center; justify-content: center; gap: 28px;
+  border: 1px solid var(--line); border-radius: 3px; padding: 14px; margin: 12px 0 4px;
+}
+.scoreboard > div:not(.vs) { display: flex; flex-direction: column; align-items: center; }
+.scoreboard span { color: var(--muted); font-size: 12px; }
+.scoreboard b { font-size: 26px; color: var(--navy); }
+.scoreboard small { color: var(--muted); }
+.scoreboard .vs { font-weight: 700; color: var(--muted); }
+.msgline { text-align: center; font-weight: 700; margin: 4px 0 14px; }
+select { font: inherit; padding: 3px 6px; border: 1px solid var(--line); border-radius: 3px; max-width: 220px; }
+.btn {
+  font: inherit; padding: 6px 14px; border: 1px solid var(--line);
+  border-radius: 3px; background: #fff; cursor: pointer;
+}
+.btn:hover { background: var(--panel); }
+
+/* タブが6つになったのでスマホでは詰める */
+body.sp nav.tabs a { font-size: 12px; }
+@media (max-width: 600px) { body:not(.pc) nav.tabs a { font-size: 12px; padding: 11px 1px; } }
+
 /* --- 折りたたみ (荒れる条件など) --- */
 details.cond {
   border: 1px solid var(--line);
@@ -228,3 +257,91 @@ details.cond > summary {
 }
 details.cond[open] > summary { border-bottom: 1px solid var(--line); margin-bottom: 10px; }
 details.cond table { margin-bottom: 4px; }
+
+/* --- これからの開催 --- */
+.upcoming { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; margin: 6px 0 14px; }
+.upcoming .lbl { align-self: center; font-weight: 700; font-size: 13px; color: var(--navy); }
+.upcoming a {
+  border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 3px;
+  padding: 6px 12px; color: var(--text); display: flex; flex-direction: column; font-size: 13px;
+}
+.upcoming a.cur { background: var(--panel); border-left-color: var(--navy); }
+.upcoming a small { color: var(--muted); font-size: 11px; }
+.upcoming a small.gname { color: var(--pink); }
+
+/* --- グレード --- */
+.badge.grade.g1 { background: #1d4fa8; color: #fff; }
+.badge.grade.g2 { background: #c2365c; color: #fff; }
+.badge.grade.g3 { background: #2f8a4e; color: #fff; }
+.badge.grade.gl { background: #eef1f4; color: var(--muted); }
+
+/* --- 各レースの予想一覧 --- */
+h3.venue-h { margin: 16px 0 6px; font-size: 14px; color: var(--navy); }
+table.plist td { vertical-align: middle; }
+tr.click { cursor: pointer; }
+tr.click:hover { background: var(--blue-bg) !important; }
+.dist { color: var(--pink); font-weight: 600; }
+
+/* --- レース一覧カードは全体を押せるように --- */
+a.rrow.card { color: inherit; }
+a.rrow.card:hover { background: var(--blue-bg); text-decoration: none; }
+a.rrow.card .rhead { color: var(--link); }
+.rsubs { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* --- レースページの予想まとめ --- */
+.predbox { border: 2px solid var(--navy); border-radius: 4px; padding: 12px 14px; margin: 14px 0; }
+.predbox h2 { margin: 0 0 8px; font-size: 16px; color: var(--navy); }
+.predbox h3 { margin: 14px 0 6px; font-size: 14px; }
+.predbox .why { font-size: 13px; background: var(--panel); padding: 8px 10px; border-radius: 3px; margin: 10px 0 0; }
+
+/* --- 並び順 --- */
+.sortbar { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); margin: -6px 0 10px; }
+.sortbar button {
+  font: inherit; padding: 3px 12px; border: 1px solid var(--line); background: #fff;
+  border-radius: 3px; cursor: pointer; color: var(--text);
+}
+.sortbar button.on { background: var(--navy); color: #fff; border-color: var(--navy); }
+.sortbar button:disabled { color: #c3ccd6; cursor: not-allowed; }
+
+/* --- 推奨買い目 --- */
+td.betcell { font-size: 12px; min-width: 220px; }
+.hitpay { color: var(--pink); }
+.miss { color: var(--muted); }
+tr.ph td { color: #9aa8b8; background: #fafbfc; font-size: 12px; }
+.rrow.ph { opacity: .55; }
+.recbox { border: 1px solid var(--line); border-left: 5px solid var(--muted); border-radius: 3px; padding: 8px 12px; margin: 12px 0 4px; }
+.recbox.rec { border-left-color: var(--green); }
+.recbox.upset { border-left-color: var(--pink); }
+.recbox h3 { margin: 2px 0 2px !important; }
+
+/* --- この日の注目 --- */
+.hl { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 8px; }
+.hlcol { border: 1px solid var(--line); border-radius: 3px; padding: 8px 12px; }
+.hlcol h3 { margin: 2px 0 6px; font-size: 14px; color: var(--navy); }
+.hlcol h3 small { color: var(--muted); font-weight: 400; }
+.hlcol ul { list-style: none; margin: 0; padding: 0; }
+.hlcol li { padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.hlcol li:first-child { border-top: none; }
+.hlcol li small { color: var(--muted); }
+.hlcol li .bets { font-size: 12px; margin-top: 2px; }
+.hlcol li.none { color: var(--muted); }
+body.sp .hl { grid-template-columns: 1fr; }
+@media (max-width: 900px) { body:not(.pc) .hl { grid-template-columns: 1fr; } }
+
+/* --- 能力指数タブ --- */
+table.idxtable td, table.idxtable th { padding: 6px 8px; }
+table.idxtable td.idx { font-size: 14px; }
+table.idxtable td.na { color: #a9b5c3; }
+table.idxtable tbody tr:nth-child(even) { background: none; }
+.idxnote { line-height: 1.7; }
+.rlinks.between { justify-content: space-between; border: none; }
+.rlinks.between > span { display: flex; flex-wrap: wrap; gap: 6px; }
+.rlinks.between > span { border: none; padding: 0; }
+h3.sub { font-size: 13px; margin: 6px 0; color: var(--navy); }
+
+/* 100万馬券の法則 */
+.badge.mk { background: #fff1e0; color: #b45309; border: 1px solid #f5c48a; }
+b.mk { color: #b45309; }
+.mbox { margin: 8px 0 12px; }
+.mrules { font-size: 12px; color: var(--muted); }
+.mtable td.mrules { min-width: 220px; }

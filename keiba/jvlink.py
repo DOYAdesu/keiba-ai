@@ -160,6 +160,12 @@ def fetch_jv_result(race_id, race_date):
         return False
 
 
+def collect_jv_toku(from_date):
+    """特別登録馬 (出馬表が出る前の週末の特別レース) を取得するジェネレータ。"""
+    ymd = str(from_date).replace("-", "")
+    yield from run_bridge(["toku", ymd])
+
+
 def collect_jv_workout(from_date, setup=False):
     """坂路調教データを取得するジェネレータ。"""
     ymd = str(from_date).replace("-", "")
@@ -275,6 +281,8 @@ def main():
     ap = argparse.ArgumentParser(description="JRA-VAN Data Lab 連携")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("settings", help="JV-Link 設定画面を開く")
+    p = sub.add_parser("toku", help="特別登録馬を取得")
+    p.add_argument("from_date", help="YYYY-MM-DD")
     for name in ("race", "horse", "workout"):
         p = sub.add_parser(name)
         p.add_argument("from_date", help="YYYY-MM-DD")
@@ -285,6 +293,15 @@ def main():
     if args.cmd == "settings":
         open_settings()
         print("設定画面を閉じました。")
+        return
+    if args.cmd == "toku":
+        gen = collect_jv_toku(args.from_date)
+        try:
+            for msg in gen:
+                print(msg, flush=True)
+        except RuntimeError as e:
+            print(f"エラー: {e}", file=sys.stderr)
+            sys.exit(2)
         return
     gen = {
         "race": collect_jv_race,

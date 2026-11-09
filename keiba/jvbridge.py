@@ -90,6 +90,9 @@ ADDED_COLUMNS = {
     "races": [("lap", "TEXT"), ("pace_s3", "REAL"), ("pace_s4", "REAL"),
               ("pace_l3", "REAL"), ("pace_l4", "REAL"),
               ("corner3", "TEXT"), ("corner4", "TEXT")],
+    # 「無かった」記録をいつ確かめたか。開催前に見て無かったレースを
+    # 永久に無いことにしないよう、古い記録は確かめ直す
+    "scraped": [("checked_at", "TEXT")],
 }
 
 
@@ -107,9 +110,20 @@ def log(msg):
     print(msg, flush=True)
 
 
+TOKU_SCHEMA = """
+-- 特別登録 (TK)。出馬表が出る前 (日〜水) に分かる、特別レースの登録馬
+CREATE TABLE IF NOT EXISTS tokubetsu (
+    race_id TEXT, num INTEGER, horse_id TEXT, horse_name TEXT, sex TEXT,
+    trainer_id TEXT, trainer_name TEXT, kinryo REAL,
+    PRIMARY KEY (race_id, num)
+);
+"""
+
+
 def open_db(db_path):
     conn = sqlite3.connect(db_path)
     conn.executescript(SCHEMA)
+    conn.executescript(TOKU_SCHEMA)
     migrate(conn)
     return conn
 
@@ -300,7 +314,7 @@ def parse_ra(raw):
         "_post_time": f"{hasso[:2]}:{hasso[2:]}" if len(hasso) == 4 and hasso.isdigit() else None,
         "_field_size": _int(_s(raw, 883, 885)),
         "_grade": {"A": "G1", "B": "G2", "C": "G3", "D": "重賞",
-                   "E": "重賞", "F": "J.G1", "G": "J.G2", "H": "J.G3"}.get(grade_cd),
+                   "L": "L", "F": "J.G1", "G": "J.G2", "H": "J.G3"}.get(grade_cd),
         "_lap": ",".join(f"{v:.1f}" for v in laps) if laps else None,
         "_pace_s3": s3, "_pace_s4": s4, "_pace_l3": l3, "_pace_l4": l4,
     }
@@ -614,7 +628,7 @@ def cmd_race(from_yyyymmdd, db_path, setup=False):
         # 出走行を実際に保存できたレースだけ「取得済み」にする
         # (出馬表段階のレースをマークすると後で結果が取れなくなるため)
         conn.executemany(
-            "INSERT OR REPLACE INTO scraped VALUES (?, 'ok2')",
+            "INSERT OR REPLACE INTO scraped (race_id, status) VALUES (?, 'ok2')",
             [(rid,) for rid in saved_races],
         )
         conn.commit()
@@ -668,7 +682,7 @@ def cmd_rtrace(race_id, yyyymmdd, db_path):
             return
         for row in rows:
             save_result_row(conn, info, row)
-        conn.execute("INSERT OR REPLACE INTO scraped VALUES (?, 'ok2')", (race_id,))
+        conn.execute("INSERT OR REPLACE INTO scraped (race_id, status) VALUES (?, 'ok2')", (race_id,))
         conn.commit()
         log(f"速報から結果を取得: {len(rows)}頭")
     finally:
@@ -819,6 +833,104 @@ def cmd_rtodds(race_id, yyyymmdd, db_path=None):
     log("ODDS " + ",".join(f"{k}:{v}" for k, v in sorted(odds.items())))
 
 
+TK_HORSE_START = 655   # TokuUmaInfo[300] (各70バイト) = 1始まり656
+TK_HORSE_LEN = 70
+
+
+def parse_tk(raw):
+    """TK: 特別登録馬。返り値: (レース情報 dict, 登録馬 list) / None
+
+    先頭〜競走名は RA と同じ並び。その後ろは JVData_Struct の JV_TK_TOKUUMA 準拠
+    (グレード615・条件616〜・距離637・トラック641・登録頭数653・馬は656から70バイトずつ)。
+    """
+    if len(raw) < TK_HORSE_START + TK_HORSE_LEN:
+        return None
+    year, monthday = _s(raw, 11, 15), _s(raw, 15, 19)
+    jyo = _s(raw, 19, 21)
+    if jyo not in JRA_PLACES:
+        return None
+    race_id = f"{year}{jyo}{_s(raw, 21, 23)}{_s(raw, 23, 25)}{_s(raw, 25, 27)}"
+    track = _int(_s(raw, 640, 642)) or 0
+    surface = ("芝" if 10 <= track <= 22 else "ダ" if 23 <= track <= 29
+               else "障" if track >= 51 else None)
+    name = _s(raw, 32, 92) or _s(raw, 572, 592)
+    if not name:
+        name = (SYUBETU.get(_s(raw, 615, 617), "")
+                + JYOKEN.get(_s(raw, 633, 636), "")).strip()
+    info = {
+        "race_id": race_id,
+        "date": f"{year}-{monthday[:2]}-{monthday[2:]}",
+        "place": JRA_PLACES[jyo],
+        "race_no": _int(_s(raw, 25, 27)),
+        "race_name": name,
+        "surface": surface,
+        "distance": _int(_s(raw, 636, 640)),
+        "going": None, "weather": None,
+        "_post_time": None,
+        "_field_size": _int(_s(raw, 652, 655)),
+        "_grade": {"A": "G1", "B": "G2", "C": "G3", "D": "重賞", "L": "L",
+                   "F": "J.G1", "G": "J.G2", "H": "J.G3"}.get(_s(raw, 614, 615)),
+    }
+    horses = []
+    n = min(_int(_s(raw, 652, 655)) or 0, 300)
+    for i in range(n):
+        b = TK_HORSE_START + i * TK_HORSE_LEN
+        if b + TK_HORSE_LEN > len(raw):
+            break
+        hid = _s(raw, b + 3, b + 13)
+        if not hid:
+            continue
+        futan = _s(raw, b + 66, b + 69)
+        horses.append({
+            "num": _int(_s(raw, b, b + 3)) or i + 1,
+            "horse_id": hid,
+            "horse_name": _s(raw, b + 13, b + 49),
+            "sex": SEX.get(_s(raw, b + 51, b + 52)),
+            "trainer_id": _s(raw, b + 53, b + 58) or None,
+            "trainer_name": _s(raw, b + 58, b + 66) or None,
+            "kinryo": int(futan) / 10.0 if futan.isdigit() and int(futan) > 0 else None,
+        })
+    return info, horses
+
+
+def cmd_toku(from_yyyymmdd, db_path):
+    """特別登録馬 (TOKU) を取り込む。出馬表が出る前の週末の特別レース用。"""
+    conn = open_db(db_path)
+    jv = JVLink()
+    jv.init()
+    ret, read_count, dl_count = jv.open("TOKU", from_yyyymmdd + "000000", 1)
+    if ret in (-1, -2):
+        log("新しい特別登録はありません。")
+        return
+    n_race = n_horse = 0
+    try:
+        for spec, raw in jv.read_records():
+            if spec != "TK":
+                continue
+            parsed = parse_tk(raw)
+            if parsed is None:
+                continue
+            info, horses = parsed
+            rid = info.pop("race_id")
+            # 出馬表が既に入っているレースは races を上書きしない (発走時刻などが消えるため)
+            have = conn.execute(
+                "SELECT 1 FROM entries WHERE race_id=? LIMIT 1", (rid,)).fetchone()
+            if not have:
+                save_race_info(conn, rid, info)
+            conn.execute("DELETE FROM tokubetsu WHERE race_id=?", (rid,))
+            conn.executemany(
+                "INSERT OR REPLACE INTO tokubetsu VALUES (?,?,?,?,?,?,?,?)",
+                [(rid, h["num"], h["horse_id"], h["horse_name"], h["sex"],
+                  h["trainer_id"], h["trainer_name"], h["kinryo"]) for h in horses])
+            n_race += 1
+            n_horse += len(horses)
+        conn.commit()
+    finally:
+        jv.close()
+        conn.close()
+    log(f"特別登録 取り込み完了: {n_race}レース / {n_horse}頭")
+
+
 def cmd_workout(from_yyyymmdd, db_path, setup=False):
     """坂路調教データ (HC) を取得する。"""
     conn = open_db(db_path)
@@ -946,6 +1058,11 @@ def main():
         jv = JVLink()
         jv.settings()
         log("JV-Link 設定画面を閉じました。")
+    elif cmd == "toku":
+        if len(args) < 2 or len(args[1]) != 8 or not args[1].isdigit():
+            log("開始日を YYYYMMDD で指定してください。例: toku 20261105")
+            sys.exit(1)
+        cmd_toku(args[1], db_path)
     elif cmd in ("race", "horse", "workout"):
         if len(args) < 2 or len(args[1]) != 8 or not args[1].isdigit():
             log("開始日を YYYYMMDD で指定してください。例: race 20240101")

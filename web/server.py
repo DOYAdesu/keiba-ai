@@ -39,8 +39,11 @@ else:
         )
 
 
-def main():
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+def main(port=None):
+    import os
+
+    port = int(port or os.environ.get("PORT") or 8000)
+    uvicorn.run(app, host="127.0.0.1", port=port)
 
 
 if __name__ == "__main__":

@@ -10,4 +10,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from web.server import main  # noqa: E402
 
 if __name__ == "__main__":
-    main()
+    # python web/run.py --port 8010 のようにポートを変えられる
+    port = sys.argv[sys.argv.index("--port") + 1] if "--port" in sys.argv else None
+    main(port)

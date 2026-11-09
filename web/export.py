@@ -25,8 +25,59 @@ ENTRY_COLS = [
     "sex", "age", "kinryo", "jockey_name", "trainer_name",
     "weight", "weight_diff", "odds", "popularity",
     "p_win", "p_top3", "fair_odds", "fuku_odds", "ev_fuku",
-    "finish", "time_sec", "agari",
-]
+    "finish", "time_sec", "agari", "ability_idx", "style",
+] + ["c_spd", "c_agari", "c_recent", "c_career", "c_dist", "c_course", "c_jockey", "c_trainer", "c_sire", "c_going"]
+
+# 血統タブ: 種牡馬ごとの産駒成績 (この出走数未満は数字がぶれるので載せない)
+SIRE_MIN_STARTS = 40
+
+
+def sire_stats(conn):
+    """種牡馬ごとの産駒成績 (芝ダ・距離帯別の複勝率つき)。"""
+    import pandas as pd
+
+    from keiba.features import normalize_bloodline
+
+    conn.row_factory = None  # _rows が Row に変えているので戻す
+    df = pd.read_sql(
+        "SELECT r.surface, r.distance, r.finish, r.odds, h.sire_name "
+        "FROM results r JOIN horses h ON h.horse_id = r.horse_id "
+        "WHERE r.is_nar = 0 AND r.finish IS NOT NULL AND h.sire_name IS NOT NULL",
+        conn,
+    )
+    if df.empty:
+        return []
+    df["sire"] = df["sire_name"].map(normalize_bloodline)
+    df = df.dropna(subset=["sire"])
+    df["top3"] = df["finish"] <= 3
+    df["win"] = df["finish"] == 1
+    df["band"] = pd.cut(df["distance"], [0, 1400, 1800, 2200, 9999],
+                        labels=["短", "マイル", "中", "長"])
+
+    def rate(s):
+        return round(float(s.mean()), 3) if len(s) >= 10 else None
+
+    out = []
+    for sire, g in df.groupby("sire"):
+        if len(g) < SIRE_MIN_STARTS:
+            continue
+        wins = g[g["win"] & g["odds"].notna()]
+        out.append({
+            "sire": sire,
+            "n": int(len(g)),
+            "win": round(float(g["win"].mean()), 3),
+            "top3": round(float(g["top3"].mean()), 3),
+            "turf": rate(g.loc[g["surface"] == "芝", "top3"]),
+            "dirt": rate(g.loc[g["surface"] == "ダ", "top3"]),
+            "short": rate(g.loc[g["band"] == "短", "top3"]),
+            "mile": rate(g.loc[g["band"] == "マイル", "top3"]),
+            "mid": rate(g.loc[g["band"] == "中", "top3"]),
+            "long": rate(g.loc[g["band"] == "長", "top3"]),
+            # 単勝を全部100円で買った場合の回収率
+            "roi": round(float(wins["odds"].sum() / len(g)), 3),
+        })
+    out.sort(key=lambda s: -s["n"])
+    return out
 
 
 def _rows(conn, sql, params=()):
@@ -120,8 +171,21 @@ def export(db_path=DB_PATH, out_dir=DIST, jra_only=True, progress=print):
             for e in entries:
                 by_race.setdefault(e["race_id"], []).append(_slim(e))
 
+            # 各レースの払戻 (レースページで買い目の的中を表示する)
+            pays = {}
+            for pr in _rows(
+                conn,
+                "SELECT p.race_id, p.bet_type, p.combo, p.pay FROM payouts p "
+                "JOIN site_races r ON r.race_id=p.race_id WHERE r.date=?",
+                (date,),
+            ):
+                pays.setdefault(pr["race_id"], {}).setdefault(
+                    pr["bet_type"], []).append([pr["combo"], pr["pay"]])
+
             for r in races:
                 r["entries"] = by_race.get(r["race_id"], [])
+                if r["race_id"] in pays:
+                    r["payouts"] = pays[r["race_id"]]
                 for k, d in (("top_p_win", 4), ("top_p_top3", 4),
                              ("top_ev", 3), ("confidence", 3),
                              ("p_hit_100k", 4), ("p_hit_1m", 4),
@@ -148,9 +212,21 @@ def export(db_path=DB_PATH, out_dir=DIST, jra_only=True, progress=print):
                 "n_rec": sum(r["is_rec"] for r in races),
                 "places": sorted({r["place"] for r in races}),
                 "in_sample": races[0]["in_sample"],
+                # 出走前の日は「登録」(特別登録のみ) / 「出馬表」、終わった日は None
+                "stage": next((r.get("stage") for r in races if r.get("stage")), None),
+                "graded": [f"{r['place']}{r['race_no']}R {r['race_name']}"
+                           for r in races if r.get("grade") in ("G1", "G2", "G3")],
+                "n_million": sum(1 for r in races if (r.get("million_n") or 0) > 0),
             })
             if (i + 1) % 50 == 0 or i + 1 == len(days):
                 progress(f"書き出し {i + 1}/{len(days)}日")
+
+        sires = sire_stats(conn)
+        (out_dir / "data" / "sires.json").write_text(
+            json.dumps(sires, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        progress(f"種牡馬 {len(sires)}頭の産駒成績を書き出しました")
 
         span = _rows(conn, f"SELECT MIN(date) a, MAX(date) b FROM site_races {where}")[0]
         valid = _rows(
@@ -158,8 +234,29 @@ def export(db_path=DB_PATH, out_dir=DIST, jra_only=True, progress=print):
             f"SELECT MIN(date) d FROM site_races WHERE in_sample=0"
             + (" AND is_nar=0" if jra_only else ""),
         )[0]
+        report = _rows(conn, "SELECT value FROM site_meta WHERE key='index_report'")
+        index_report = json.loads(report[0]["value"]) if report else None
+        urow = _rows(conn, "SELECT value FROM site_meta WHERE key='upset_report'")
+        upset_report = json.loads(urow[0]["value"]) if urow else None
+        mrow = _rows(conn, "SELECT value FROM site_meta WHERE key='million_rules'")
+        million_meta = json.loads(mrow[0]["value"]) if mrow else None
+        if million_meta:
+            # 法則に当てはまったレースの一覧 (直近1年と、これからのレース)
+            hits = _rows(
+                conn,
+                "SELECT date, race_id, place, race_no, race_name, field_size, million_n, "
+                "million_rules, trifecta_pay, stage FROM site_races "
+                "WHERE million_n > 0 AND is_nar = 0 AND date >= date('now', '-365 day') "
+                "ORDER BY date DESC, million_n DESC, place, race_no")
+            million_meta["races"] = hits
+            (out_dir / "data" / "million.json").write_text(
+                json.dumps(million_meta, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8")
+            progress(f"100万馬券の法則 {len(million_meta['rules'])}件 / 当てはまり {len(hits)}レース")
         (out_dir / "data" / "index.json").write_text(
             json.dumps({
+                "index_report": index_report,
+                "upset_report": upset_report,
                 "generated": dt.datetime.now().isoformat(timespec="seconds"),
                 "from": span["a"], "to": span["b"],
                 "valid_from": valid["d"],

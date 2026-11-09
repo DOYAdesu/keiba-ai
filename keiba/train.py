@@ -73,12 +73,23 @@ def calibration_error(y_true, prob, bins=10):
     return float(err)
 
 
+VALID_DAYS = 180   # 検証に取っておく直近の日数 (残りは全部学習に使う)
+
+
 def split_by_date(meta):
-    """時系列で約 80/20 に分割し (train_idx, valid_idx, split_date) を返す。"""
+    """時系列で分割し (train_idx, valid_idx, split_date) を返す。
+
+    データが数年分あるときは直近 VALID_DAYS 日を検証に、それより前を全部学習に使う
+    (2020年からのデータで学習すると、2025年からだけより当たり方が良かった:
+    scripts/refine_data.py)。データが短いときは約 80/20。
+    """
     dates = np.sort(meta["date"].unique())
     if len(dates) < 2:
         raise RuntimeError("開催日が1日分しかありません。データ期間を広げてください。")
     split_date = dates[min(int(len(dates) * 0.8), len(dates) - 2)]
+    recent = pd.Timestamp(dates[-1]) - pd.Timedelta(days=VALID_DAYS)
+    if recent > pd.Timestamp(split_date):
+        split_date = dates[np.searchsorted(dates, np.datetime64(recent))]
     train_idx = meta["date"] <= split_date
     return train_idx, ~train_idx, pd.Timestamp(split_date)
 
