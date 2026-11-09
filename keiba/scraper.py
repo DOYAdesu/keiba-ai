@@ -558,9 +558,13 @@ def collect_jra(year_from, year_to, places=None, db_path=DB_PATH):
         for year in range(year_from, year_to + 1):
             for pcode in places:
                 pname = JRA_PLACES[pcode]
-                for kai in range(1, 7):
+                # 通常の開催は1場あたり6回・1回あたり12日までだが、
+                # 改修で別の場の開催を引き受ける年がある (2024年の京都は
+                # 阪神の休止分を抱えて7回まであり、6回で打ち切ると12月の
+                # 関西開催が丸ごと抜けていた)。空の回で抜けるので広めに回す。
+                for kai in range(1, 10):
                     found = errors = 0
-                    for day in range(1, 13):
+                    for day in range(1, 15):
                         rid1 = f"{year}{pcode}{kai:02d}{day:02d}01"
                         st = scrape_race(conn, rid1)
                         if st == "error":
