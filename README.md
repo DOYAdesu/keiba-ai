@@ -34,6 +34,24 @@ python -m venv .venv
 
 モデルを学習し直したりデータを足したら `build` → `export` → `deploy` を流し直す。
 
+### これからのレース (今週末など)
+
+終わったレースは `web.build` が results から作る。これからのレースは
+netkeiba の出馬表から作る。`web.build` は site_races を作り直すので、
+必ず build のあとに実行する。
+
+```powershell
+.venv\Scripts\python -m web.upcoming 2026-11-14   # 日付を指定
+.venv\Scripts\python -m web.upcoming --next       # 直近の開催日を探す
+```
+
+race_id の回・日目は日付から計算できないため、出馬表ページを探索して
+見つける (1場あたり十数秒。1日3場見つかったら打ち切る)。
+探索順は「過去の同じ月によく開催していた場」から。
+
+オッズが出ていれば市場モデル、出ていなければ能力モデルを使う。
+オッズが無い間は推奨レースと荒れ度が出せない (どちらも市場確率が要る)。
+
 ### Cloudflare Pages へのデプロイ
 
 ```powershell

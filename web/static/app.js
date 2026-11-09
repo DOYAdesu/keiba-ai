@@ -193,10 +193,18 @@ async function viewDay(date, { route, title }) {
   const recs = day.races.filter((r) => r.is_rec)
     .sort((a, b) => (b.is_star - a.is_star) || (b.confidence - a.confidence));
   const withResult = recs.some((r) => r.top_finish != null);
+  // オッズが出るまでは市場モデルが使えず、推奨と荒れ度が出せない
+  const noOdds = day.races.length && day.races.every((r) => r.top_odds == null);
+  const oddsNote = noOdds ? `<p class="note">
+    <span class="badge warn">オッズ未発表</span>
+    この日はまだ単勝オッズが出ていないため、馬の実力だけを見る<b>能力モデル</b>の
+    予想です。オッズが出ると、市場を加味した予想に切り替わり、
+    <b>推奨レース</b>と<b>荒れ度</b>も計算されます。</p>` : "";
   main.innerHTML = `
     ${title ? `<h1 class="page">${title}</h1>` : ""}
     ${sampleNote(day.in_sample)}
-    ${route === "top" ? `
+    ${oddsNote}
+    ${route === "top" && !noOdds ? `
       <h2 class="section">推奨レース（${fmtDate(day.date)}）</h2>
       ${recommendTable(day.date, recs, { withResult })}
       ${upsetTable(day.date, day.races)}` : ""}

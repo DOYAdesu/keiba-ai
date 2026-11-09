@@ -195,6 +195,62 @@ def _reason(top, second, field_size):
     return " ／ ".join(parts)
 
 
+def race_row(race_id, g, info, fuku_pay=None, trifecta_pay=None, in_sample=0):
+    """1レースぶんの site_races 行を作る。
+
+    g: そのレースの全頭 (rank 昇順)。info: 日付・場・距離などのレース情報。
+    終わったレースにも、これからのレースにも同じ形で使う。
+    """
+    g = g.sort_values("rank")
+    top = g.iloc[0]
+    second_top3 = float(g.iloc[1]["p_top3"]) if len(g) > 1 else 0.0
+    gap = float(top["p_top3"]) - second_top3
+    upset = payout_probs(g["p_win"], g["odds"])
+    finish = top.get("finish")
+    return {
+        "race_id": race_id,
+        "date": info["date"],
+        "place": info["place"],
+        "race_no": info.get("race_no"),
+        "race_name": info.get("race_name"),
+        "surface": info.get("surface"),
+        "distance": info.get("distance"),
+        "going": info.get("going"),
+        "weather": info.get("weather"),
+        "is_nar": int(info.get("is_nar") or 0),
+        "field_size": int(len(g)),
+        "post_time": info.get("post_time"),
+        "grade": info.get("grade"),
+        "confidence": round(float(top["p_top3"]) * 0.7 + gap * 1.5, 3),
+        "is_rec": int(top["p_top3"] >= REC_MIN_TOP3 and gap >= REC_MIN_GAP),
+        "is_star": int(pd.notna(top["ev_fuku"]) and top["ev_fuku"] >= STAR_MIN_EV),
+        "p_hit_100k": upset[100_000],
+        "p_hit_1m": upset[1_000_000],
+        "max_payout": upset["max_payout"],
+        "upset_label": upset_label(upset[1_000_000]),
+        "reason": _reason(top, second_top3, len(g)),
+        "in_sample": int(in_sample),
+        "top_horse_no": int(top["horse_no"]),
+        "top_horse_name": top["horse_name"],
+        "top_p_win": float(top["p_win"]),
+        "top_p_top3": float(top["p_top3"]),
+        "top_ev": None if pd.isna(top["ev_fuku"]) else float(top["ev_fuku"]),
+        "top_odds": None if pd.isna(top["odds"]) else float(top["odds"]),
+        "top_finish": None if finish is None or pd.isna(finish) else int(finish),
+        "top_fuku_pay": fuku_pay,
+        "trifecta_pay": trifecta_pay,
+    }
+
+
+# site_preds に入れる列 (upcoming 側と揃える)
+PRED_COLS = ["race_id", "rank", "mark", "horse_no", "waku", "horse_name",
+             "sire", "dam_sire", "sex", "age",
+             "kinryo", "jockey_name", "trainer_name",
+             "weight", "weight_diff", "odds", "popularity",
+             "p_win", "p_top3", "fair_odds", "fuku_odds", "ev_fuku", "finish",
+             "time_sec", "agari", "corner1"]
+
+
 def build(db_path=DB_PATH, model_path=MODEL_PATH, date_from=None, progress=print):
     preds, split_date = score_all(db_path, model_path, date_from)
     progress(f"{preds['race_id'].nunique()}レース / {len(preds)}頭を推論しました。")
@@ -213,20 +269,10 @@ def build(db_path=DB_PATH, model_path=MODEL_PATH, date_from=None, progress=print
 
     race_rows = []
     for race_id, g in preds.groupby("race_id", sort=False):
-        g = g.sort_values("rank")
-        top = g.iloc[0]
-        second_top3 = float(g.iloc[1]["p_top3"]) if len(g) > 1 else 0.0
-        gap = float(top["p_top3"]) - second_top3
-        confidence = round(float(top["p_top3"]) * 0.7 + gap * 1.5, 3)
-        is_rec = int(top["p_top3"] >= REC_MIN_TOP3 and gap >= REC_MIN_GAP)
-        is_star = int(pd.notna(top["ev_fuku"]) and top["ev_fuku"] >= STAR_MIN_EV)
+        top = g.sort_values("rank").iloc[0]
+        extra = races_master.loc[race_id] if race_id in races_master.index else None
         date = pd.Timestamp(top["date"]).strftime("%Y-%m-%d")
-        upset = payout_probs(g["p_win"], g["odds"])
-        extra = (
-            races_master.loc[race_id] if race_id in races_master.index else None
-        )
-        race_rows.append({
-            "race_id": race_id,
+        info = {
             "date": date,
             "place": top["place"],
             "race_no": int(top["race_no"]) if pd.notna(top["race_no"]) else None,
@@ -236,39 +282,20 @@ def build(db_path=DB_PATH, model_path=MODEL_PATH, date_from=None, progress=print
             "going": top["going"],
             "weather": top["weather"],
             "is_nar": int(top["is_nar"]) if pd.notna(top["is_nar"]) else 0,
-            "field_size": int(len(g)),
             "post_time": None if extra is None else extra["post_time"],
             "grade": None if extra is None else extra["grade"],
-            "confidence": confidence,
-            "is_rec": is_rec,
-            "is_star": is_star,
-            "p_hit_100k": upset[100_000],
-            "p_hit_1m": upset[1_000_000],
-            "max_payout": upset["max_payout"],
-            "upset_label": upset_label(upset[1_000_000]),
-            "reason": _reason(top, second_top3, len(g)),
-            "in_sample": int(bool(split_date) and date <= split_date),
-            "top_horse_no": int(top["horse_no"]),
-            "top_horse_name": top["horse_name"],
-            "top_p_win": float(top["p_win"]),
-            "top_p_top3": float(top["p_top3"]),
-            "top_ev": None if pd.isna(top["ev_fuku"]) else float(top["ev_fuku"]),
-            "top_odds": None if pd.isna(top["odds"]) else float(top["odds"]),
-            "top_finish": None if pd.isna(top["finish"]) else int(top["finish"]),
-            "top_fuku_pay": paymap.get((race_id, int(top["horse_no"]))),
-            "trifecta_pay": (int(trifecta.loc[race_id])
-                             if race_id in trifecta.index else None),
-        })
+        }
+        race_rows.append(race_row(
+            race_id, g, info,
+            fuku_pay=paymap.get((race_id, int(top["horse_no"]))),
+            trifecta_pay=(int(trifecta.loc[race_id])
+                          if race_id in trifecta.index else None),
+            in_sample=bool(split_date) and date <= split_date,
+        ))
 
     races = pd.DataFrame(race_rows)
 
-    cols = ["race_id", "rank", "mark", "horse_no", "waku", "horse_name",
-            "sire", "dam_sire", "sex", "age",
-            "kinryo", "jockey_name", "trainer_name",
-            "weight", "weight_diff", "odds", "popularity",
-            "p_win", "p_top3", "fair_odds", "fuku_odds", "ev_fuku", "finish",
-            "time_sec", "agari", "corner1"]
-    rows = preds[cols].replace({np.nan: None})
+    rows = preds[PRED_COLS].replace({np.nan: None})
 
     # 収集バッチが書き込み中だと SQLite がロックされるので、少し待つ
     conn = sqlite3.connect(db_path, timeout=120)
