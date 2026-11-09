@@ -123,7 +123,9 @@ def export(db_path=DB_PATH, out_dir=DIST, jra_only=True, progress=print):
             for r in races:
                 r["entries"] = by_race.get(r["race_id"], [])
                 for k, d in (("top_p_win", 4), ("top_p_top3", 4),
-                             ("top_ev", 3), ("confidence", 3)):
+                             ("top_ev", 3), ("confidence", 3),
+                             ("p_hit_100k", 4), ("p_hit_1m", 4),
+                             ("max_payout", 0)):
                     r[k] = _round(r.get(k), d)
 
             payload = {

@@ -112,6 +112,43 @@ function recommendTable(date, rows, { withResult }) {
   return `<div class="scroll"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`;
 }
 
+/** 荒れそうなレース: 三連単で高額配当が出る確率が高い順 */
+function upsetTable(date, races) {
+  const rows = races
+    .filter((r) => r.p_hit_1m != null)
+    .sort((a, b) => b.p_hit_1m - a.p_hit_1m)
+    .slice(0, 5);
+  if (!rows.length) return "";
+  const withResult = rows.some((r) => r.trifecta_pay != null);
+  const cls = { "大荒れ警戒": "f1", "荒れ気味": "f2", "標準": "fx", "堅い": "rec" };
+  const body = rows.map((r) => `
+    <tr>
+      <td><span class="badge ${cls[r.upset_label] || "fx"}">${esc(r.upset_label)}</span></td>
+      <td class="nw"><a href="${raceHref(date, r)}">${esc(r.place)} ${r.race_no}R</a></td>
+      <td class="nw">${esc(r.race_name || "")}</td>
+      <td class="num">${r.field_size}頭</td>
+      <td class="num">${pct(r.p_hit_1m, 1)}</td>
+      <td class="num">${pct(r.p_hit_100k, 0)}</td>
+      <td class="num">${r.max_payout ? yen(Math.round(r.max_payout)) : ""}</td>
+      <td class="num">${pct(r.top_p_win)}</td>
+      ${withResult ? `<td class="num">${yen(r.trifecta_pay)}</td>` : ""}
+    </tr>`).join("");
+  return `
+    <h2 class="section">荒れそうなレース（高額配当狙い）</h2>
+    <div class="scroll"><table>
+      <thead><tr>
+        <th>荒れ度</th><th class="nw">レース</th><th>レース名</th><th class="num">頭数</th>
+        <th class="num">100万超</th><th class="num">10万超</th>
+        <th class="num">想定最高配当</th><th class="num">本命勝率</th>
+        ${withResult ? '<th class="num">実際の三連単</th>' : ""}
+      </tr></thead><tbody>${body}</tbody></table></div>
+    <p class="note">三連単の配当は「払戻率 ÷ その組み合わせへの投票割合」で決まるので、
+      単勝オッズから各組み合わせの配当を見積もり、AIの勝率で「その組み合わせが来る確率」を
+      掛け合わせています。<b>100万超</b>＝三連単が100万円以上になる確率（全体平均 約1.4%）。
+      検証期間では確率上位20%のレースで実際に5.0%発生し、下位60%では1件も出ませんでした。
+      当てに行く買い目ではなく、<b>どのレースが荒れやすいか</b>の目安です。</p>`;
+}
+
 function venueCards(day) {
   const venues = new Map();
   for (const r of day.races) {
@@ -132,6 +169,8 @@ function raceCard(date, r) {
     r.field_size ? `${r.field_size}頭` : "",
     r.is_rec ? '<span class="badge rec">堅軸</span>' : "",
     r.is_star ? '<span class="badge star">★</span>' : "",
+    r.upset_label === "大荒れ警戒" ? '<span class="badge f1">大荒れ警戒</span>'
+      : r.upset_label === "荒れ気味" ? '<span class="badge f2">荒れ気味</span>' : "",
   ].filter(Boolean).join(" ");
   return `
     <div class="rrow">
@@ -159,7 +198,8 @@ async function viewDay(date, { route, title }) {
     ${sampleNote(day.in_sample)}
     ${route === "top" ? `
       <h2 class="section">推奨レース（${fmtDate(day.date)}）</h2>
-      ${recommendTable(day.date, recs, { withResult })}` : ""}
+      ${recommendTable(day.date, recs, { withResult })}
+      ${upsetTable(day.date, day.races)}` : ""}
     <h2 class="section">レース一覧</h2>
     ${dayNav(day, route)}
     ${venueCards(day)}`;

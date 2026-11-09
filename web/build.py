@@ -20,6 +20,8 @@ from keiba.features import (
 )
 from keiba.scraper import DB_PATH
 from keiba.train import MODEL_PATH
+from keiba.upset import label as upset_label
+from keiba.upset import payout_probs
 
 # 推奨 (堅軸) の条件: 複勝率が高く、2番手に対して抜けている本命
 REC_MIN_TOP3 = 0.75
@@ -52,6 +54,10 @@ CREATE TABLE site_races_new (
     confidence  REAL,
     is_rec      INTEGER,
     is_star     INTEGER,
+    p_hit_100k  REAL,
+    p_hit_1m    REAL,
+    max_payout  REAL,
+    upset_label TEXT,
     reason      TEXT,
     in_sample   INTEGER,
     top_horse_no   INTEGER,
@@ -61,7 +67,8 @@ CREATE TABLE site_races_new (
     top_ev         REAL,
     top_odds       REAL,
     top_finish     INTEGER,
-    top_fuku_pay   INTEGER
+    top_fuku_pay   INTEGER,
+    trifecta_pay   INTEGER
 );
 
 CREATE TABLE site_preds_new (
@@ -198,6 +205,11 @@ def build(db_path=DB_PATH, model_path=MODEL_PATH, date_from=None, progress=print
         races_master = pd.read_sql(
             "SELECT race_id, post_time, grade FROM races", conn
         ).set_index("race_id")
+        # 荒れ度の答え合わせ用 (1レースに複数組ある場合は最高額)
+        trifecta = pd.read_sql(
+            "SELECT race_id, MAX(pay) AS pay FROM payouts "
+            "WHERE bet_type='三連単' GROUP BY race_id", conn
+        ).set_index("race_id")["pay"]
 
     race_rows = []
     for race_id, g in preds.groupby("race_id", sort=False):
@@ -209,6 +221,7 @@ def build(db_path=DB_PATH, model_path=MODEL_PATH, date_from=None, progress=print
         is_rec = int(top["p_top3"] >= REC_MIN_TOP3 and gap >= REC_MIN_GAP)
         is_star = int(pd.notna(top["ev_fuku"]) and top["ev_fuku"] >= STAR_MIN_EV)
         date = pd.Timestamp(top["date"]).strftime("%Y-%m-%d")
+        upset = payout_probs(g["p_win"], g["odds"])
         extra = (
             races_master.loc[race_id] if race_id in races_master.index else None
         )
@@ -229,6 +242,10 @@ def build(db_path=DB_PATH, model_path=MODEL_PATH, date_from=None, progress=print
             "confidence": confidence,
             "is_rec": is_rec,
             "is_star": is_star,
+            "p_hit_100k": upset[100_000],
+            "p_hit_1m": upset[1_000_000],
+            "max_payout": upset["max_payout"],
+            "upset_label": upset_label(upset[1_000_000]),
             "reason": _reason(top, second_top3, len(g)),
             "in_sample": int(bool(split_date) and date <= split_date),
             "top_horse_no": int(top["horse_no"]),
@@ -239,6 +256,8 @@ def build(db_path=DB_PATH, model_path=MODEL_PATH, date_from=None, progress=print
             "top_odds": None if pd.isna(top["odds"]) else float(top["odds"]),
             "top_finish": None if pd.isna(top["finish"]) else int(top["finish"]),
             "top_fuku_pay": paymap.get((race_id, int(top["horse_no"]))),
+            "trifecta_pay": (int(trifecta.loc[race_id])
+                             if race_id in trifecta.index else None),
         })
 
     races = pd.DataFrame(race_rows)
