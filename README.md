@@ -21,13 +21,30 @@ python -m venv .venv
 
 ```powershell
 .venv\Scripts\python -m web.build     # 事前計算 (全レースをモデルに通す。約40秒)
+.venv\Scripts\python -m web.export    # dist/ に静的ファイルを書き出す
 .venv\Scripts\python -m web.server    # http://127.0.0.1:8000
 ```
 
 `サイト起動.bat` をダブルクリックしてもよい。
 
-画面側では推論せず、`web.build` が作った `site_races` / `site_preds` を読むだけなので表示が速い。
-モデルを学習し直したら `web.build` を流し直す。
+画面側では推論しない。`web.build` が予想を `site_races` / `site_preds` に落とし、
+`web.export` がそれを「1開催日 = 1 JSON」にまとめる。1日ぶん取れば
+トップ・予想・結果・レース詳細が全部描けるので、画面遷移で取りに行かずに済む。
+サーバは `dist/` をそのまま配るだけなので、手元で見えているものが本番と一致する。
+
+モデルを学習し直したりデータを足したら `build` → `export` → `deploy` を流し直す。
+
+### Cloudflare Pages へのデプロイ
+
+```powershell
+npx --yes wrangler@4.42.0 login                   # 初回のみ
+npx --yes wrangler@4.42.0 pages deploy dist --project-name keiba-ai --branch main --commit-dirty=true
+```
+
+公開先: https://keiba-ai-3ex.pages.dev/ (194ファイル / 約29MB)
+
+`wrangler login` はブラウザが自動で開かないことがある。その場合は表示された
+URL を手で開く。待ち受け (localhost:8976) は数分で閉じるので、間をあけない。
 
 ### 道具としての UI (Streamlit)
 
