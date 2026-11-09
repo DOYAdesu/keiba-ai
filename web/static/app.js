@@ -463,10 +463,194 @@ async function viewResults(date) {
     <p class="note">本命＝AI勝率1位の馬。回収率は100円均等買いで、単勝は確定オッズ、
       複勝は実際の払戻データを使っています。</p>
     <h2 class="section">推奨の結果</h2>
-    ${recommendTable(day.date, recs, { withResult: true })}`;
+    ${recommendTable(day.date, recs, { withResult: true })}
+    ${missReview(day)}`;
 }
 
-const SUBTABS = [["shutuba", "出馬表"], ["ai", "AI予想"], ["index", "能力指数"]];
+/** 本命・堅軸・指数1位が4着以下だったときの敗因 (回顧から) */
+function missReview(day) {
+  const rows = [];
+  for (const r of day.races) {
+    if (r.top_finish == null) continue;
+    const maxIdx = Math.max(...r.entries.map((e) => e.ability_idx ?? -1));
+    for (const e of r.entries) {
+      if (e.finish == null || e.finish <= 3) continue;
+      const kinds = [];
+      if (e.rank === 1) kinds.push("本命");
+      if (e.rank === 1 && r.is_rec) kinds.push("堅軸");
+      if (e.ability_idx != null && e.ability_idx === maxIdx) kinds.push("指数1位");
+      if (!kinds.length) continue;
+      rows.push({ r, e, kinds, cause: e.rv?.cause || "その他" });
+    }
+  }
+  if (!rows.length) return "";
+  const counts = {};
+  rows.forEach((x) => { counts[x.cause] = (counts[x.cause] || 0) + 1; });
+  const body = rows.map(({ r, e, kinds, cause }) => {
+    const rv = e.rv || {};
+    const run = [rv.pos != null ? `序盤${rv.pos}番手` : "", rv.ar != null ? `上がり${rv.ar}位` : "",
+      rv.tw != null ? `勝ち馬と${rv.tw.toFixed(1)}秒差` : ""].filter(Boolean).join("・");
+    return `<tr><td class="nw">${esc(cause)}</td><td class="nw">${kinds.join("・")}</td>
+      <td class="nw"><a href="${raceHref(day.date, r)}/review">${raceLabel(r)}</a></td>
+      <td class="nw">${e.horse_no} ${esc(e.horse_name)}</td>
+      <td class="num">${e.finish}</td><td class="num">${e.popularity ?? ""}</td>
+      <td class="nw">${esc(run)}</td><td class="mid">${memoBadge(rv.memo)}</td></tr>`;
+  }).join("");
+  return `<h2 class="section">着外の回顧（本命・堅軸・指数1位）</h2>
+    <p class="note">AIの上位の馬が4着以下だったときの主な敗因です：
+      ${Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${esc(k)} ${v}頭`).join("／")}</p>
+    <div class="scroll"><table><thead><tr><th>敗因</th><th>区分</th><th>レース</th><th>馬</th>
+      <th class="num">着順</th><th class="num">人気</th><th>中身</th><th class="mid">次走へのメモ</th></tr></thead>
+      <tbody>${body}</tbody></table></div>
+    <p class="note">敗因は通過順・上がり3F・3着とのタイム差から、出遅れ・位置取り（いつもより大きく後ろ）→
+      前残りで届かず → 惜敗（3着と0.1秒以内）→ 先行して失速（前で運んで上がり下位）→ 伸びず の順で当てはめています。
+      レース名を押すと回顧へ移動します。</p>`;
+}
+
+const SUBTABS = [["shutuba", "出馬表"], ["ai", "AI予想"], ["index", "能力指数"], ["review", "回顧"]];
+
+/* ---------- 回顧 (ペース・レースの質・各馬の流れ・次走へのメモ) ---------- */
+
+const MEMO_CLASS = { "巻き返し": "rec", "見直し": "rec", "信頼": "star", "割引": "warn", "力負け": "fx" };
+const memoBadge = (m) => (m ? `<span class="badge ${MEMO_CLASS[m] || "fx"}">${esc(m)}</span>` : "");
+const FLOW_LABEL = { "不利": "合わなかった", "有利": "合った", "ふつう": "ふつう" };
+
+/** 出馬表の馬名の下に出す「前走」の一行 */
+function prevLine(e) {
+  const p = e.rv?.prev;
+  if (!p || (!p.memo && !p.cause && p.flow !== "不利")) return "";
+  const bits = [`前走${p.finish}着`];
+  if (p.flow === "不利") bits.push("流れ不向き");
+  if (p.cause && p.finish > 3) bits.push(p.cause);
+  return `<div class="ped prev">${memoBadge(p.memo)} ${esc(bits.join("・"))}</div>`;
+}
+
+const BET_ORDER = ["単勝", "複勝", "枠連", "馬連", "ワイド", "馬単", "三連複", "三連単"];
+const BET_SEP = { "馬単": " → ", "三連単": " → " };
+
+function comboText(type, c) {
+  if (type === "枠連" && c.length === 2) return `${c[0]} - ${c[1]}`;
+  const parts = c.match(/.{2}/g) || [c];
+  return parts.map((x) => String(Number(x))).join(BET_SEP[type] || " - ");
+}
+
+function payoutTable(race) {
+  const pays = race.payouts;
+  if (!pays) return "";
+  const rows = BET_ORDER.filter((t) => pays[t]).map((t) => {
+    const list = [...pays[t]].sort((a, b) => a[1] - b[1]);
+    return `<tr><td class="nw">${t}</td>
+      <td class="nw">${list.map(([c]) => esc(comboText(t, c))).join("<br>")}</td>
+      <td class="num">${list.map(([, v]) => payCell(v)).join("<br>")}</td></tr>`;
+  }).join("");
+  return `<h3>払戻金</h3><div class="scroll"><table class="paytable">
+    <thead><tr><th>券種</th><th>組み合わせ</th><th class="num">払戻(100円)</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+function lapTable(race) {
+  const rv = race.review;
+  if (!rv?.laps?.length) return "";
+  const laps = rv.laps;
+  const dist = race.distance || 0;
+  // 最初の区間は距離が200mで割り切れないとき100mになる
+  const first = dist % 200 === 0 ? 200 : dist % 200;
+  let at = 0, cum = 0;
+  const head = [], lap = [], pass = [];
+  laps.forEach((v, i) => {
+    at += i === 0 ? first : 200;
+    cum += v;
+    head.push(`<th class="num">${at}m</th>`);
+    const cls = i === 0 ? "" : v < 11.5 ? "fastlap" : v >= 12.5 ? "slowlap" : "";
+    lap.push(`<td class="num ${cls}">${v.toFixed(1)}</td>`);
+    pass.push(`<td class="num">${cum.toFixed(1)}</td>`);
+  });
+  return `<h3>ラップタイム</h3>
+    <p class="rmeta">前半3F ${num(rv.s3)} ／ 上がり3F ${num(rv.l3)}
+      ／ ペース <b>${esc(rv.pace || "")}</b>${rv.quality ? ` ／ レースの質 <b>${esc(rv.quality)}</b>` : ""}</p>
+    <div class="scroll"><table class="laps">
+      <thead><tr><th></th>${head.join("")}</tr></thead>
+      <tbody><tr><th>ラップ</th>${lap.join("")}</tr><tr><th>通過</th>${pass.join("")}</tr></tbody>
+    </table></div>
+    <p class="note">赤＝11.5秒未満の速いラップ、青＝12.5秒以上の遅いラップ（最初の区間は除く）。</p>`;
+}
+
+function reviewStatsNote() {
+  const st = INDEX?.review_stats;
+  if (!st) return "";
+  const rows = ["巻き返し", "見直し", "信頼", "割引", "力負け"].filter((k) => st[k]).map((k) => {
+    const v = st[k];
+    const d = v.lift * 100;
+    return `<tr><td>${memoBadge(k)}</td><td class="num">${v.n.toLocaleString()}</td>
+      <td class="num">${pct(v.next_top3, 1)}</td><td class="num">${pct(v.expected, 1)}</td>
+      <td class="num ${d >= 0 ? "plus" : "minus"}">${d >= 0 ? "+" : ""}${d.toFixed(1)}pt</td></tr>`;
+  }).join("");
+  return `<details class="help"><summary>次走へのメモの実績</summary>
+    <p>2021年以降の中央で、メモが付いた馬の<b>次走</b>の3着内率を、次走で同じ人気だった馬の平均と比べました。</p>
+    <div class="scroll"><table><thead><tr><th>メモ</th><th class="num">頭数</th>
+      <th class="num">次走3着内</th><th class="num">同じ人気の平均</th><th class="num">差</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <p class="note">向きは合っていますが差は小さく、ほとんどはオッズ（人気）に織り込まれています。
+      買い目の根拠ではなく、見方の参考にしてください。なお、前走の上がり順位・勝ち馬との差・位置取りの乱れは
+      AIの特徴量にも入っています（入れる前より確認期間の複勝AUCが 0.746→0.752 に改善）。</p></details>`;
+}
+
+function reviewView(race) {
+  const rv = race.review;
+  const done = race.winner_no != null || race.entries.some((e) => e.finish != null);
+  if (!done) {
+    return `<p class="note">回顧はレースが終わると表示されます。出馬表の馬名の下に、各馬の<b>前走の回顧</b>（次走へのメモ）を出しています。</p>
+      ${reviewStatsNote()}`;
+  }
+  const t = rv?.text || {};
+  const lines = [
+    t.pace && ["ペース", t.pace],
+    t.quality && ["レースの質", t.quality],
+    t.settle && ["展開", t.settle],
+  ].filter(Boolean);
+  let check = "";
+  if (race.pace && rv?.pace) {
+    const ok = race.pace === rv.pace;
+    check = `<p class="rmeta">答え合わせ：想定ペース ${esc(race.pace)} → 実際 ${esc(rv.pace)}
+      ${ok ? '<span class="badge rec">的中</span>' : '<span class="badge fx">はずれ</span>'}</p>`;
+  }
+  const es = [...race.entries].sort((a, b) => (a.finish ?? 99) - (b.finish ?? 99));
+  const rows = es.map((e) => {
+    const r = e.rv || {};
+    const run = r.pos != null ? `序盤${r.pos}番手${r.ar != null ? `・上がり${r.ar}位` : ""}` : "";
+    return `<tr>
+      <td class="num">${e.finish ?? "取消"}</td>
+      <td class="num">${e.horse_no}</td>
+      <td class="nw">${esc(e.horse_name)}</td>
+      <td class="num">${e.rank}</td>
+      <td class="nw">${run}</td>
+      <td class="num">${r.tw != null && e.finish !== 1 ? r.tw.toFixed(1) : ""}</td>
+      <td class="mid">${esc(FLOW_LABEL[r.flow] || "")}</td>
+      <td class="nw">${esc(r.cause || "")}</td>
+      <td class="mid">${memoBadge(r.memo)}</td>
+    </tr>`;
+  }).join("");
+  return `<div class="reviewbox">
+      ${lines.map(([k, v]) => `<p><b>${k}</b> ${esc(v)}</p>`).join("")}
+      ${check}
+    </div>
+    <div class="scroll"><table>
+      <thead><tr><th class="num">着</th><th class="num">馬番</th><th>馬名</th><th class="num">AI順</th>
+        <th>走り</th><th class="num">勝ち馬との差</th><th class="mid">流れ</th><th>敗因</th><th class="mid">次走へのメモ</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <details class="help"><summary>回顧の見方</summary>
+      <p><b>ペース</b>は前半3F−上がり3Fの差を同じ芝ダ×距離の過去と比べたもの（前傾＝ハイ・後傾＝スロー）。
+      <b>レースの質</b>はラップの形（前半3F・中盤・上がり3F・最後の1Fの失速）を同じ競馬場×芝ダ×距離の平均と比べ、
+      2020〜2024年のレースを3つの型に分けて決めています。<b>展開</b>は上位3頭の序盤の位置（頭数に対する割合）で、
+      前2割5分以内なら前残り、後ろ半分なら差し・追込決着です。</p>
+      <p><b>流れ</b>は決着とペースに対する位置取り（前残りで後方＝合わなかった、差し決着で前＝合わなかった など）。
+      <b>次走へのメモ</b>：巻き返し（出遅れ・展開不利で上がり3位以内、または3着と0.2秒以内）／
+      見直し（展開不利で勝ち馬と1秒以内）／信頼（展開不利をはね返した好走・0.3秒以上の完勝）／
+      割引（展開に恵まれた好走で上がりは下位）／力負け（勝ち馬と1.5秒以上の大敗）。</p></details>
+    ${reviewStatsNote()}
+    ${lapTable(race)}
+    ${payoutTable(race)}`;
+}
 
 /* ---------- 能力指数の内訳 ---------- */
 
@@ -941,7 +1125,8 @@ async function viewRace(date, raceId, sub = "ai") {
       b.classList.toggle("on", b.dataset.sort === mode));
     document.getElementById("subbody").innerHTML =
       sub === "ai" ? aiTable(race, mode)
-        : sub === "index" ? indexTable(race, mode) : shutubaTable(race, mode);
+        : sub === "index" ? indexTable(race, mode)
+        : sub === "review" ? reviewView(race) : shutubaTable(race, mode);
   };
   main.querySelectorAll("[data-sort]").forEach((b) =>
     b.addEventListener("click", () => { setSort(b.dataset.sort); render(); }));
@@ -979,7 +1164,7 @@ function shutubaTable(race, mode = "no") {
       <td class="mid"><span class="mark m${Math.min(e.rank - 1, 3)}">${e.mark || ""}</span></td>
       <td class="nw">${esc(e.horse_name)}
         ${e.sire ? `<div class="ped">父 ${esc(e.sire)}${
-          e.dam_sire ? ` ／ 母父 ${esc(e.dam_sire)}` : ""}</div>` : ""}</td>
+          e.dam_sire ? ` ／ 母父 ${esc(e.dam_sire)}` : ""}</div>` : ""}${prevLine(e)}</td>
       <td class="mid">${esc(e.sex || "")}${e.age ?? ""}</td>
       <td class="num">${num(e.kinryo)}</td>
       <td class="nw">${esc(e.jockey_name || "")}
@@ -1005,7 +1190,9 @@ function shutubaTable(race, mode = "no") {
       <th>AI勝率</th><th class="num">複勝率</th>
       <th class="num">タイム</th><th class="num">上がり</th>
     </tr></thead><tbody>${rows}</tbody></table></div>
-    <p class="note">印＝AIの勝率順 ◎○▲△。AI勝率はレース内で合計100%になるよう正規化しています。</p>`;
+    <p class="note">印＝AIの勝率順 ◎○▲△。AI勝率はレース内で合計100%になるよう正規化しています。
+      馬名の下の「前走」は前走の回顧（次走へのメモ・敗因）です。見方は「回顧」タブにあります。</p>
+    ${race.payouts ? payoutTable(race) : ""}`;
 }
 
 function aiTable(race, mode = "ai") {

@@ -6,6 +6,12 @@
       "runtimeExecutable": ".venv/Scripts/python.exe",
       "runtimeArgs": ["-m", "web.server"],
       "port": 8000
+    },
+    {
+      "name": "keiba-dist",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["-m", "http.server", "8011", "--directory", "dist"],
+      "port": 8011
     }
   ]
 }

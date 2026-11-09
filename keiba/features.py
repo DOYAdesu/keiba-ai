@@ -36,6 +36,9 @@ FEATURES = [
     "dist_change", "form_trend", "front_count", "pace_pressure_self",
     # 調教 (坂路): 直前の追い切りタイムと本数
     "workout_time4f", "workout_lap1f", "workout_count14d",
+    # 前走の回顧: 上がり順位・勝ち馬との差・流れの有利不利・位置取りの乱れ (review_feats.py)
+    "prev_agari_rank_r", "prev_to_win", "prev_flow_bad", "prev_flow_good",
+    "prev_pos_late", "avg_agari_rank_r5", "avg_to_win5",
 ]
 
 # 市場情報 (オッズ) を加えた特徴量。的中率重視の「市場モデル」で使う。
@@ -243,6 +246,11 @@ def add_history_features(df, horses=None):
     df["pace_pressure_self"] = df["front_count"] * (0.5 - df["avg_corner1_ratio5"])
 
     df = add_workout_features(df)
+
+    from .review_feats import add_review_features
+    rf = add_review_features(df)
+    for c in rf.columns:
+        df[c] = rf[c]
     return df
 
 
@@ -325,7 +333,15 @@ def prepare_history(db_path=DB_PATH):
     df["turn"] = df["place_code_str"].map(turn_of)
     df["dist_band"] = df["distance"] // 400
     df = attach_pedigree(df, horses)
+    from .review_feats import race_review_cols
+    rc = race_review_cols(df)
+    for c in rc.columns:
+        df[c] = rc[c]
     return History(df, horses, load_workouts(db_path)), horses
+
+
+REVIEW_KEYS = ["prev_agari_rank_r", "prev_to_win", "prev_flow_bad", "prev_flow_good",
+               "prev_pos_late", "avg_agari_rank_r5", "avg_to_win5"]
 
 
 def horse_stats(hist, horse_id, as_of):
@@ -339,9 +355,23 @@ def horse_stats(hist, horse_id, as_of):
             "career_top3_rate": np.nan, "avg_finish5": np.nan,
             "last_finish": np.nan, "days_since_last": np.nan,
             "avg_corner1_ratio5": np.nan, "avg_agari5": np.nan,
+            **{k: np.nan for k in REVIEW_KEYS},
         }
     last5 = h.tail(5)
+    rv = {k: np.nan for k in REVIEW_KEYS}
+    if "ag_r" in h:   # prepare_history で回顧の列を足してある
+        last = h.iloc[-1]
+        rv["prev_agari_rank_r"] = last["ag_r"]
+        rv["prev_to_win"] = last["to_win"]
+        rv["prev_flow_bad"] = last["flow_bad"]
+        rv["prev_flow_good"] = last["flow_good"]
+        before = h["c1r"].iloc[:-1].tail(5).dropna()
+        if len(before) >= 2 and pd.notna(last["c1r"]):
+            rv["prev_pos_late"] = last["c1r"] - before.mean()
+        rv["avg_agari_rank_r5"] = last5["ag_r"].mean()
+        rv["avg_to_win5"] = last5["to_win"].mean()
     return {
+        **rv,
         "career_starts": n,
         "career_win_rate": (h["finish"] == 1).mean(),
         "career_top3_rate": (h["finish"] <= 3).mean(),

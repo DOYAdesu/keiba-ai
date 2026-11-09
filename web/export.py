@@ -98,6 +98,30 @@ def _slim(entry):
     return {k: v for k, v in e.items() if v is not None}
 
 
+def _review(conn, db_path, where):
+    """回顧と前走メモを作る (web/review.py)。"""
+    from web import review
+
+    rows = _rows(conn, f"SELECT race_id, date FROM site_races {where}")
+    dates = {r["race_id"]: r["date"] for r in rows}
+    conn.row_factory = None
+    horses = {}
+    for sql in (
+        "SELECT p.race_id, p.horse_no, x.horse_id FROM site_preds p "
+        "JOIN results x ON x.race_id = p.race_id AND x.horse_no = p.horse_no",
+        "SELECT p.race_id, p.horse_no, x.horse_id FROM site_preds p "
+        "JOIN entries x ON x.race_id = p.race_id AND x.horse_no = p.horse_no",
+        "SELECT p.race_id, p.horse_no, x.horse_id FROM site_preds p JOIN site_races s "
+        "ON s.race_id = p.race_id AND s.stage = '登録' "
+        "JOIN tokubetsu x ON x.race_id = p.race_id AND x.num = p.horse_no",
+    ):
+        for rid, no, hid in conn.execute(sql):
+            if rid in dates and hid:
+                horses.setdefault((rid, int(no)), hid)
+    races, entries, stats = review.site_payload(db_path, list(dates), dates, horses)
+    return races, entries, stats
+
+
 def day_summary(races):
     """結果タブの集計 (本命と推奨の的中率・回収率)。"""
     done = [r for r in races if r["top_finish"] is not None]
@@ -151,6 +175,9 @@ def export(db_path=DB_PATH, out_dir=DIST, jra_only=True, progress=print):
             if src.is_file():
                 shutil.copy2(src, out_dir / src.name)
 
+        # 回顧 (ペース・レースの質・各馬の流れと次走へのメモ) と前走メモ
+        rv_races, rv_entries, rv_stats = _review(conn, db_path, where)
+
         index_days = []
         for i, date in enumerate(days):
             races = _rows(
@@ -169,7 +196,11 @@ def export(db_path=DB_PATH, out_dir=DIST, jra_only=True, progress=print):
             )
             by_race = {}
             for e in entries:
-                by_race.setdefault(e["race_id"], []).append(_slim(e))
+                se = _slim(e)
+                rv = rv_entries.get((e["race_id"], e["horse_no"]))
+                if rv:
+                    se["rv"] = {k: v for k, v in rv.items() if v is not None}
+                by_race.setdefault(e["race_id"], []).append(se)
 
             # 各レースの払戻 (レースページで買い目の的中を表示する)
             pays = {}
@@ -186,6 +217,8 @@ def export(db_path=DB_PATH, out_dir=DIST, jra_only=True, progress=print):
                 r["entries"] = by_race.get(r["race_id"], [])
                 if r["race_id"] in pays:
                     r["payouts"] = pays[r["race_id"]]
+                if r["race_id"] in rv_races:
+                    r["review"] = rv_races[r["race_id"]]
                 for k, d in (("top_p_win", 4), ("top_p_top3", 4),
                              ("top_ev", 3), ("confidence", 3),
                              ("p_hit_100k", 4), ("p_hit_1m", 4),
@@ -257,6 +290,7 @@ def export(db_path=DB_PATH, out_dir=DIST, jra_only=True, progress=print):
             json.dumps({
                 "index_report": index_report,
                 "upset_report": upset_report,
+                "review_stats": rv_stats,
                 "generated": dt.datetime.now().isoformat(timespec="seconds"),
                 "from": span["a"], "to": span["b"],
                 "valid_from": valid["d"],

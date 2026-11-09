@@ -345,3 +345,19 @@ b.mk { color: #b45309; }
 .mbox { margin: 8px 0 12px; }
 .mrules { font-size: 12px; color: var(--muted); }
 .mtable td.mrules { min-width: 220px; }
+
+/* 回顧 */
+.reviewbox { background: var(--panel); border-radius: 8px; padding: 10px 14px; margin: 8px 0 12px; }
+.reviewbox p { margin: 4px 0; line-height: 1.7; }
+.reviewbox b { display: inline-block; min-width: 5.5em; color: var(--navy); }
+.ped.prev { color: var(--text); }
+.ped.prev .badge { font-size: 10px; padding: 0 5px; }
+table.laps th, table.laps td { padding: 4px 6px; font-size: 12px; }
+td.fastlap { color: #c2365c; font-weight: 700; }
+td.slowlap { color: #1d6fd0; }
+td.plus { color: var(--green); font-weight: 700; }
+td.minus { color: var(--pink); font-weight: 700; }
+table.paytable td { vertical-align: top; line-height: 1.6; }
+details.help { margin: 10px 0; font-size: 13px; }
+details.help summary { cursor: pointer; color: var(--link); }
+details.help p { line-height: 1.7; }
