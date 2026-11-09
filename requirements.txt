@@ -1,0 +1,10 @@
+requests
+beautifulsoup4
+lxml
+pandas
+scikit-learn
+lightgbm
+joblib
+streamlit
+fastapi
+uvicorn

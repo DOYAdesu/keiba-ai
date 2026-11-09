@@ -1,0 +1,214 @@
+:root {
+  --navy: #1b365d;
+  --navy-dark: #15294a;
+  --accent: #ffc83d;
+  --line: #d9e1ea;
+  --bg: #ffffff;
+  --panel: #f1f5f9;
+  --text: #1a2330;
+  --muted: #6b7a8d;
+  --link: #1d6fd0;
+  --green: #2f8a4e;
+  --green-bg: #e3f4e8;
+  --pink-bg: #fde9ee;
+  --pink: #c2365c;
+  --orange-bg: #fdf0df;
+  --orange: #b4700f;
+  --blue-bg: #e6f0fb;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", Meiryo, system-ui, sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* --- ヘッダ / ナビ --- */
+.titlebar {
+  padding: 14px 24px;
+  font-weight: 700;
+  font-size: 15px;
+  border-bottom: 1px solid var(--line);
+}
+
+.wrap { max-width: 1240px; margin: 0 auto; padding: 0 16px 60px; }
+
+nav.tabs {
+  display: flex;
+  background: var(--navy);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 16px;
+}
+nav.tabs a {
+  flex: 1;
+  text-align: center;
+  padding: 13px 8px;
+  color: #fff;
+  font-weight: 600;
+  border-bottom: 3px solid transparent;
+}
+nav.tabs a:hover { background: var(--navy-dark); text-decoration: none; }
+nav.tabs a.active { background: var(--navy-dark); border-bottom-color: var(--accent); }
+
+.viewtoggle {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 18px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.viewtoggle button {
+  font: inherit;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  background: #fff;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.viewtoggle button.on { background: var(--navy); color: #fff; border-color: var(--navy); }
+
+/* --- セクション --- */
+h2.section {
+  background: var(--panel);
+  border-left: 5px solid var(--navy);
+  margin: 26px 0 12px;
+  padding: 10px 14px;
+  font-size: 15px;
+  font-weight: 700;
+}
+h1.page { font-size: 22px; margin: 22px 0 4px; }
+
+.note { color: var(--muted); font-size: 12px; margin: 6px 0 14px; }
+
+/* --- テーブル --- */
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td {
+  border: 1px solid var(--line);
+  padding: 7px 9px;
+  text-align: left;
+  vertical-align: top;
+}
+th { background: var(--panel); font-weight: 700; white-space: nowrap; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.nw, th.nw { white-space: nowrap; }
+td.mid, th.mid { text-align: center; }
+tbody tr:nth-child(even) { background: #fafcfe; }
+.scroll { overflow-x: auto; }
+
+/* --- バッジ --- */
+.badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.badge.rec { background: var(--green-bg); color: var(--green); }
+.badge.star { background: var(--blue-bg); color: var(--link); }
+.badge.f1 { background: var(--pink-bg); color: var(--pink); }
+.badge.f2 { background: var(--orange-bg); color: var(--orange); }
+.badge.f3 { background: var(--blue-bg); color: var(--link); }
+.badge.fx { background: #eef1f4; color: var(--muted); }
+.badge.warn { background: #fff4e5; color: #9a6400; }
+
+.mark { font-weight: 700; }
+.mark.m0 { color: var(--pink); }
+.mark.m1 { color: var(--orange); }
+.mark.m2 { color: #7a51c4; }
+.mark.m3 { color: var(--muted); }
+
+.hit { display: inline-block; width: 20px; text-align: center; font-weight: 700; }
+.hit.o2 { color: var(--pink); }
+.hit.o1 { color: var(--orange); }
+.hit.x { color: var(--muted); }
+
+/* --- 日付ナビ --- */
+.daynav { display: flex; gap: 8px; align-items: center; margin: 12px 0 16px; }
+.daynav .cur {
+  background: var(--navy); color: #fff; font-weight: 700;
+  padding: 8px 28px; border-radius: 3px;
+}
+.daynav a, .daynav span.off {
+  padding: 8px 14px; border: 1px solid var(--line); border-radius: 3px;
+  color: var(--text); background: #fff;
+}
+.daynav span.off { color: #c3ccd6; }
+
+/* --- レース一覧カード --- */
+.venues { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.venue { border: 1px solid var(--line); border-radius: 3px; overflow: hidden; }
+.venue > h3 {
+  margin: 0; padding: 9px 12px; background: var(--navy);
+  color: #fff; font-size: 14px;
+}
+.rrow { display: flex; gap: 10px; padding: 9px 10px; border-top: 1px solid var(--line); }
+.rrow:first-of-type { border-top: none; }
+.rno {
+  flex: 0 0 34px; background: #8fa3bb; color: #fff; border-radius: 2px;
+  font-weight: 700; text-align: center; padding: 6px 0; height: fit-content;
+  font-size: 13px;
+}
+.rbody { flex: 1; min-width: 0; }
+.rhead { font-weight: 700; font-size: 13px; }
+.rmeta { color: var(--muted); font-size: 12px; }
+.rmeta .dist { color: var(--pink); font-weight: 600; }
+.rpick { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.rpick .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rpick .pct { color: var(--link); font-weight: 700; font-variant-numeric: tabular-nums; }
+.rresult { color: var(--muted); font-size: 12px; }
+
+/* --- レース詳細 --- */
+.racehead {
+  border: 1px solid var(--line); border-radius: 3px;
+  padding: 14px 16px; margin: 14px 0; display: flex; gap: 16px; align-items: center;
+}
+.racehead .big {
+  background: var(--navy); color: #fff; font-weight: 700; font-size: 20px;
+  padding: 14px 16px; border-radius: 3px;
+}
+.racehead h1 { margin: 0 0 2px; font-size: 20px; }
+.rlinks { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 4px; }
+.rlinks a, .rlinks span {
+  padding: 5px 12px; border: 1px solid var(--line); border-radius: 3px; font-size: 13px;
+}
+.rlinks span.cur { background: var(--navy); color: #fff; border-color: var(--navy); }
+
+.subtabs { display: flex; gap: 4px; border-bottom: 2px solid var(--line); margin: 18px 0 14px; }
+.subtabs button {
+  font: inherit; background: none; border: none; cursor: pointer;
+  padding: 9px 16px; color: var(--muted); font-weight: 600;
+  border-bottom: 3px solid transparent; margin-bottom: -2px;
+}
+.subtabs button.on { color: var(--text); border-bottom-color: var(--navy); }
+
+.bar { background: #e3ecf6; border-radius: 2px; height: 9px; min-width: 2px; }
+.barcell { display: flex; align-items: center; gap: 6px; }
+.bar > i { display: block; height: 100%; background: var(--link); border-radius: 2px; }
+
+.ped { color: var(--muted); font-size: 11px; line-height: 1.4; }
+
+.msg { padding: 40px 10px; color: var(--muted); text-align: center; }
+
+/* --- スマホ --- */
+body.sp .venues, body.narrow .venues { grid-template-columns: 1fr; }
+body.sp .wrap, body.narrow .wrap { padding: 0 10px 50px; }
+body.sp nav.tabs a, body.narrow nav.tabs a { padding: 11px 2px; font-size: 13px; }
+body.sp .racehead, body.narrow .racehead { flex-direction: column; align-items: flex-start; }
+
+@media (max-width: 900px) {
+  body:not(.pc) .venues { grid-template-columns: 1fr; }
+  body:not(.pc) .wrap { padding: 0 10px 50px; }
+  body:not(.pc) nav.tabs a { padding: 11px 2px; font-size: 13px; }
+}
