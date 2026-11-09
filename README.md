@@ -102,6 +102,31 @@ URL を手で開く。待ち受け (localhost:8976) は数分で閉じるので�
 .venv\Scripts\python -m keiba.backtest --ev 1.2
 ```
 
+### 自動更新 (タスクスケジューラ)
+
+`scripts/auto_update.ps1` を Windows のタスク `KeibaSiteUpdate` が
+**毎日 9:00 と 18:30** に実行する。中身は
+
+1. 終わったレースの結果を取り込む (取得済みはスキップ)
+2. 予想を事前計算 (`web.build`)
+3. 木〜日のみ、これからのレースを予想 (`web.upcoming --next`)
+4. 書き出して Cloudflare へデプロイ
+
+月〜水に 3 をやらないのは、出馬表がまだ出ておらず探索が空振りするため。
+別の収集が動いているときは 1 を見送る (netkeiba に二重アクセスしない)。
+実行中はロックファイルを置き、前の回が終わっていなければ降りる。
+
+ログは `data/auto_update.log` (2MB を超えたら末尾2000行に切り詰め)。
+
+```powershell
+Get-ScheduledTaskInfo KeibaSiteUpdate          # 次回・前回の実行
+Start-ScheduledTask KeibaSiteUpdate            # 手動で今すぐ走らせる
+Unregister-ScheduledTask KeibaSiteUpdate       # やめる
+```
+
+注意: .ps1 は **BOM 付き UTF-8** で保存すること。Windows PowerShell 5.1 は
+BOM が無いと CP932 として読むため、日本語コメントで構文エラーになる。
+
 ## race_id の形式
 
 - **中央**: `年(4) + 場(2) + 回(2) + 日目(2) + レース(2)` — 例 `202506050811` = 2025年 中山 5回8日目 11R
