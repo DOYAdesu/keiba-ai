@@ -27,6 +27,15 @@ HEADERS = {
 WAIT_SEC = 1.5
 
 
+class FetchError(RuntimeError):
+    """取れなかっただけ (通信エラー・一時的なブロック・5xx など)。
+
+    「そのレースは存在しない」とは区別する。取り違えると、通信が一度
+    詰まっただけで開催が終わったと判断して、その開催の残りを丸ごと
+    取りこぼす (2024年12月の阪神がこれで抜けていた)。
+    """
+
+
 class BlockedError(RuntimeError):
     """netkeiba 側にアクセス制限された可能性が高いときに送出。"""
 
@@ -128,7 +137,7 @@ def fetch_html(url, encoding="EUC-JP"):
     resp = request_with_retry(url)
     time.sleep(WAIT_SEC)
     if resp is None:
-        return None
+        raise FetchError(f"通信に失敗: {url}")
     # WAF ブロックの特徴: 400/403 で本文が空
     if resp.status_code in (400, 403) and not resp.text:
         _block_streak += 1
@@ -137,10 +146,10 @@ def fetch_html(url, encoding="EUC-JP"):
                 "netkeiba からのアクセスが制限されている可能性があります。"
                 "数時間〜半日おいてから再開してください (取得済みデータは保持されます)。"
             )
-        return None
+        raise FetchError(f"ブロックされた可能性: {url}")
     _block_streak = 0
     if resp.status_code != 200:
-        return None
+        raise FetchError(f"HTTP {resp.status_code}: {url}")
     resp.encoding = encoding
     return resp.text
 
@@ -379,11 +388,13 @@ def save_race_extras(conn, race_id, info, extras):
 def backfill_race(conn, race_id):
     """既に取得済みのレースに調教師とラップだけを足す。
 
-    返り値: 'saved' / 'none'(ページ無し)
+    返り値: 'saved' / 'none'(ページ無し) / 'error'(取れなかっただけ)
     """
-    html = fetch_html(RACE_URL.format(race_id=race_id))
-    if html is None:
-        return "none"
+    try:
+        html = fetch_html(RACE_URL.format(race_id=race_id))
+    except FetchError as e:
+        print(f"取得できず (あとで取り直します): {e}", flush=True)
+        return "error"
     parsed = parse_race_page(html, race_id)
     if parsed is None:
         return "none"
@@ -459,6 +470,7 @@ def scrape_race(conn, race_id):
 
     status は 'ok'(旧: 通過・上り無し) / 'ok2'(現行) / 'none' の3種。
     'none' は NONE_TTL_DAYS 日だけ信じ、過ぎたら取り直す。
+    'error' は「取れなかっただけ」なので scraped には記録せず、次回取り直す。
     """
     hit = conn.execute(
         "SELECT status, checked_at FROM scraped WHERE race_id=?", (race_id,)
@@ -469,7 +481,11 @@ def scrape_race(conn, race_id):
         if _none_is_fresh(hit[1]):
             return "none"
 
-    html = fetch_html(RACE_URL.format(race_id=race_id))
+    try:
+        html = fetch_html(RACE_URL.format(race_id=race_id))
+    except FetchError as e:
+        print(f"取得できず (あとで取り直します): {e}", flush=True)
+        return "error"
     parsed = parse_race_page(html, race_id) if html else None
     now = dt.datetime.now().isoformat(timespec="seconds")
     if parsed is None:
@@ -507,7 +523,11 @@ def backfill_payouts(limit=300, since="2026-08-27", db_path=DB_PATH):
         yield f"払戻が未取得のレース: {len(ids)}件 (最大{limit}件ずつ)"
         done = 0
         for i, rid in enumerate(ids, 1):
-            html = fetch_html(RACE_URL.format(race_id=rid))
+            try:
+                html = fetch_html(RACE_URL.format(race_id=rid))
+            except FetchError as e:
+                print(f"取得できず (あとで取り直します): {e}", flush=True)
+                continue
             pays = parse_payouts(html) if html else []
             if pays:
                 save_payouts(conn, rid, pays)
@@ -524,33 +544,53 @@ def race_exists(conn, race_id):
 
 
 def collect_jra(year_from, year_to, places=None, db_path=DB_PATH):
-    """中央競馬の結果を収集するジェネレータ。進捗メッセージを yield する。"""
+    """中央競馬の結果を収集するジェネレータ。進捗メッセージを yield する。
+
+    場 × 回 × 日目 を順に当たり、1Rが存在しない日で打ち切る。
+    「取れなかっただけ (error)」を「存在しない (none)」と同じに扱うと、
+    通信が一度詰まっただけでその開催の残りを丸ごと落とすので区別する。
+    """
     conn = connect(db_path)
     places = places or list(JRA_PLACES)
     saved = 0
+    unresolved = []
     try:
         for year in range(year_from, year_to + 1):
             for pcode in places:
                 pname = JRA_PLACES[pcode]
                 for kai in range(1, 7):
-                    first_day_ok = False
+                    found = errors = 0
                     for day in range(1, 13):
                         rid1 = f"{year}{pcode}{kai:02d}{day:02d}01"
-                        if not race_exists(conn, rid1):
+                        st = scrape_race(conn, rid1)
+                        if st == "error":
+                            # 取れなかっただけ。この日は飛ばし、開催は続いていると見る
+                            errors += 1
+                            unresolved.append(f"{year} {pname} {kai}回{day}日目")
+                            continue
+                        if st == "none":
                             break
-                        first_day_ok = True
+                        found += 1
                         saved += 1
                         for r in range(2, 13):
                             rid = f"{year}{pcode}{kai:02d}{day:02d}{r:02d}"
-                            if scrape_race(conn, rid) == "none":
+                            st_r = scrape_race(conn, rid)
+                            if st_r == "none":
                                 break
+                            if st_r == "error":
+                                unresolved.append(f"{year} {pname} "
+                                                  f"{kai}回{day}日目 {r}R")
+                                continue
                             saved += 1
                         yield f"{year} {pname} {kai}回{day}日目 取得完了 (累計{saved}R)"
-                    if not first_day_ok:
+                    if not found and not errors:
                         break  # この回が無ければ以降の回も無い
             yield f"=== {year}年 完了 ==="
     finally:
         conn.close()
+    if unresolved:
+        yield (f"取れなかった日が{len(unresolved)}件あります "
+               f"(例: {', '.join(unresolved[:3])})。もう一度実行すると取り直します。")
     yield f"中央 収集終了: {saved}レース"
 
 
@@ -624,9 +664,12 @@ def collect_pedigree(db_path=DB_PATH):
         total = len(ids)
         yield f"血統未取得の馬: {total}頭 (約{total // 60 + 1}分)"
         for i, horse_id in enumerate(ids, 1):
-            html = fetch_html(HORSE_PED_URL.format(horse_id=horse_id))
-            if html is None:
-                continue  # 取得失敗 (ブロック等)。保存せず後日リトライできるようにする
+            try:
+                html = fetch_html(HORSE_PED_URL.format(horse_id=horse_id))
+            except FetchError as e:
+                # 保存せず後日リトライできるようにする
+                print(f"取得できず (あとで取り直します): {e}", flush=True)
+                continue
             ped = parse_horse_page(html)
             if ped is None:
                 ped = {"sire_id": None, "sire_name": None,
