@@ -102,10 +102,33 @@ def connect(db_path=DB_PATH):
 _block_streak = 0
 
 
+# 回線の瞬断やタイムアウトで何時間分もの収集が落ちないよう、少し粘る
+NET_RETRIES = 4
+NET_BACKOFF = 5.0
+
+
+def request_with_retry(url, timeout=20):
+    """GET する。タイムアウト・接続エラーは間をあけて数回やり直す。
+
+    それでも駄目なら None。1件のためにバッチ全体を落とさないため。
+    """
+    for attempt in range(NET_RETRIES):
+        try:
+            return requests.get(url, headers=HEADERS, timeout=timeout)
+        except (requests.Timeout, requests.ConnectionError) as e:
+            if attempt == NET_RETRIES - 1:
+                print(f"通信に失敗したためスキップ: {url} ({e})", flush=True)
+                return None
+            time.sleep(NET_BACKOFF * (attempt + 1))
+    return None
+
+
 def fetch_html(url, encoding="EUC-JP"):
     global _block_streak
-    resp = requests.get(url, headers=HEADERS, timeout=20)
+    resp = request_with_retry(url)
     time.sleep(WAIT_SEC)
+    if resp is None:
+        return None
     # WAF ブロックの特徴: 400/403 で本文が空
     if resp.status_code in (400, 403) and not resp.text:
         _block_streak += 1

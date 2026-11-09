@@ -212,3 +212,19 @@ body.sp .racehead, body.narrow .racehead { flex-direction: column; align-items: 
   body:not(.pc) .wrap { padding: 0 10px 50px; }
   body:not(.pc) nav.tabs a { padding: 11px 2px; font-size: 13px; }
 }
+
+/* --- 折りたたみ (荒れる条件など) --- */
+details.cond {
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0 12px;
+  margin: 10px 0 18px;
+}
+details.cond > summary {
+  cursor: pointer;
+  padding: 10px 0;
+  font-weight: 700;
+  font-size: 13px;
+}
+details.cond[open] > summary { border-bottom: 1px solid var(--line); margin-bottom: 10px; }
+details.cond table { margin-bottom: 4px; }

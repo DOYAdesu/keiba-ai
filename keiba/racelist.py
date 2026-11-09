@@ -7,9 +7,7 @@
 import re
 import time
 
-import requests
-
-from .scraper import HEADERS, JRA_PLACES, WAIT_SEC
+from .scraper import JRA_PLACES, WAIT_SEC, request_with_retry
 
 SHUTUBA_URL = "https://race.netkeiba.com/race/shutuba.html?race_id={race_id}"
 DATE_RE = re.compile(r"(\d{4})年(\d{1,2})月(\d{1,2})日")
@@ -25,9 +23,9 @@ def _fetch_shutuba_date(race_id):
     """出馬表ページの開催日を返す。ページが無ければ None。"""
     import datetime as dt
 
-    resp = requests.get(SHUTUBA_URL.format(race_id=race_id), headers=HEADERS, timeout=20)
+    resp = request_with_retry(SHUTUBA_URL.format(race_id=race_id))
     time.sleep(WAIT_SEC)
-    if resp.status_code != 200:
+    if resp is None or resp.status_code != 200:
         return None
     resp.encoding = resp.apparent_encoding
     m = DATE_RE.search(resp.text[:30000])

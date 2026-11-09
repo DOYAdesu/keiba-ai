@@ -27,8 +27,12 @@ def fetch_shutuba(race_id):
     """出馬表を取得して (レース情報dict, 出走馬DataFrame) を返す。"""
     is_nar = race_id[4:6] in NAR_PLACES
     url = (SHUTUBA_URL_NAR if is_nar else SHUTUBA_URL_JRA).format(race_id=race_id)
-    resp = requests.get(url, headers=HEADERS, timeout=20)
+    from .scraper import request_with_retry
+
+    resp = request_with_retry(url)
     time.sleep(WAIT_SEC)
+    if resp is None:
+        raise RuntimeError(f"出馬表を取得できませんでした: {url}")
     resp.raise_for_status()
     resp.encoding = resp.apparent_encoding
     soup = BeautifulSoup(resp.text, "lxml")
