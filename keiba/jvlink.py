@@ -271,6 +271,34 @@ def list_day_races(date, db_path=None):
         conn.close()
 
 
+def collect_odds_hist(from_date, db_path=None):
+    """終わったレースの時系列オッズ (前日最終・40分前など) を取り込むジェネレータ。"""
+    import sqlite3
+
+    from .scraper import DB_PATH
+
+    conn = sqlite3.connect(str(db_path or DB_PATH))
+    try:
+        try:
+            done = {r[0] for r in conn.execute(
+                "SELECT race_id FROM odds_hist WHERE tag IN ('fin','none')")}
+        except sqlite3.OperationalError:
+            done = set()
+        rows = conn.execute(
+            "SELECT DISTINCT race_id, date FROM results WHERE is_nar=0 AND date>=? "
+            "ORDER BY date", (str(from_date),)).fetchall()
+    finally:
+        conn.close()
+    todo = [(r, d.replace("-", "")) for r, d in rows if r not in done]
+    if not todo:
+        yield "時系列オッズ: 新しいレースはありません"
+        return
+    path = PROJECT_ROOT / "data" / "oddshist_recent.txt"
+    lines = [f"{r}\t{d}" for r, d in todo]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    yield from run_bridge(["oddshist", str(path), "--nowait"])
+
+
 def open_settings():
     """JV-Link の設定画面 (利用キー入力) を開く。閉じるまでブロックする。"""
     for msg in run_bridge(["settings"]):
@@ -283,6 +311,8 @@ def main():
     sub.add_parser("settings", help="JV-Link 設定画面を開く")
     p = sub.add_parser("toku", help="特別登録馬を取得")
     p.add_argument("from_date", help="YYYY-MM-DD")
+    p = sub.add_parser("oddshist", help="終わったレースの時系列オッズを取得")
+    p.add_argument("from_date", help="YYYY-MM-DD")
     for name in ("race", "horse", "workout"):
         p = sub.add_parser(name)
         p.add_argument("from_date", help="YYYY-MM-DD")
@@ -294,8 +324,8 @@ def main():
         open_settings()
         print("設定画面を閉じました。")
         return
-    if args.cmd == "toku":
-        gen = collect_jv_toku(args.from_date)
+    if args.cmd in ("toku", "oddshist"):
+        gen = (collect_jv_toku if args.cmd == "toku" else collect_odds_hist)(args.from_date)
         try:
             for msg in gen:
                 print(msg, flush=True)

@@ -1,0 +1,9 @@
+# Cloudflare Pages (keiba-ai) の設定。npx wrangler pages deploy dist で読まれる。
+# 更新ボタン: functions/api/update/ が受け付けた依頼を KV に置き、PC の scripts/update_poller.py が取りに来る。
+name = "keiba-ai"
+pages_build_output_dir = "dist"
+compatibility_date = "2025-01-01"
+
+[[kv_namespaces]]
+binding = "UPD"
+id = "03f7adbb15e14856afce400916b21187"

@@ -73,6 +73,16 @@ def calibration_error(y_true, prob, bins=10):
     return float(err)
 
 
+# 当日にならないと分からない特徴量 (馬体重は発走の約70分前、馬場は当日朝に確定)
+DAY_FEATURES = ["weight", "weight_diff", "going_code"]
+PRE_FEATURES = [c for c in FEATURES if c not in DAY_FEATURES]
+PRE_MARKET_FEATURES = [c for c in MARKET_FEATURES if c not in DAY_FEATURES]
+
+# 学習に使う行の始まり。特徴量 (通算成績など) はそれより前の成績も使って作る。
+# 2016年からにすると、確認期間3つ (2025/5〜2026/11) のレース内AUCが4モデルとも平均で少し上がった
+# (12組中8組で上。差は +0.000〜+0.004): scripts/refine_train_from.py
+TRAIN_FROM = "2016-01-01"
+
 VALID_DAYS = 180   # 検証に取っておく直近の日数 (残りは全部学習に使う)
 
 
@@ -103,6 +113,8 @@ def train(db_path=DB_PATH, model_path=MODEL_PATH):
         )
 
     X, meta = build_training_data(df)
+    keep = (meta["date"] >= pd.Timestamp(TRAIN_FROM)).to_numpy()
+    X, meta = X[keep].reset_index(drop=True), meta[keep].reset_index(drop=True)
     train_idx, valid_idx, split_date = split_by_date(meta)
 
     model_top3 = _fit_lgbm(
@@ -112,14 +124,27 @@ def train(db_path=DB_PATH, model_path=MODEL_PATH):
         X[train_idx], meta["win"][train_idx], X[valid_idx], meta["win"][valid_idx]
     )
 
-    # 市場モデル: オッズを特徴量に含める (的中率重視)
-    Xm = add_market_features(X, meta["odds"], meta["race_id"])
+    # 市場モデル: オッズを特徴量に含める (的中率重視)。
+    # オッズは発走40分前のもの (予想を出す時点で分かるもの。無いレースは確定オッズ)
+    from .oddsmove import model_odds
+    odds_mk = model_odds(meta, db_path)
+    Xm = add_market_features(X, odds_mk, meta["race_id"])
     model_m3 = _fit_lgbm(
         Xm[train_idx], meta["top3"][train_idx], Xm[valid_idx], meta["top3"][valid_idx]
     )
     model_m1 = _fit_lgbm(
         Xm[train_idx], meta["win"][train_idx], Xm[valid_idx], meta["win"][valid_idx]
     )
+
+    # 前日モデル: 馬体重・馬場が出る前 (前日・当日の朝) 用。それらを使わずに学習する
+    # (今のモデルに空欄で入れるより当たる: scripts/refine_live.py A)
+    Xp = X[PRE_FEATURES]
+    Xpm = Xm[PRE_MARKET_FEATURES]
+    pre_models = {}
+    for key, XX in (("pre_top3", Xp), ("pre_win", Xp), ("pre_market_top3", Xpm), ("pre_market_win", Xpm)):
+        target = "win" if key.endswith("win") else "top3"
+        pre_models[key] = _fit_lgbm(XX[train_idx], meta[target][train_idx],
+                                    XX[valid_idx], meta[target][valid_idx])
 
     prob3 = model_top3.predict_proba(X[valid_idx])[:, 1]
     prob1 = model_win.predict_proba(X[valid_idx])[:, 1]
@@ -134,6 +159,9 @@ def train(db_path=DB_PATH, model_path=MODEL_PATH):
     vm = meta[valid_idx].copy()
     vm["prob3"], vm["prob1"] = prob3, prob1
     vm["mprob3"], vm["mprob1"] = mprob3, mprob1
+    for key, m in pre_models.items():
+        XX = Xpm if "market" in key else Xp
+        vm[f"p_{key}"] = m.predict_proba(XX[valid_idx])[:, 1]
     top1_by3 = vm.sort_values("prob3", ascending=False).groupby("race_id").head(1)
     top1_by1 = vm.sort_values("prob1", ascending=False).groupby("race_id").head(1)
     mtop1_by3 = vm.sort_values("mprob3", ascending=False).groupby("race_id").head(1)
@@ -148,6 +176,9 @@ def train(db_path=DB_PATH, model_path=MODEL_PATH):
     for key, prob_col, target in [
         ("top3", "prob3", "top3"), ("win", "prob1", "win"),
         ("market_top3", "mprob3", "top3"), ("market_win", "mprob1", "win"),
+        ("pre_top3", "p_pre_top3", "top3"), ("pre_win", "p_pre_win", "win"),
+        ("pre_market_top3", "p_pre_market_top3", "top3"),
+        ("pre_market_win", "p_pre_market_win", "win"),
     ]:
         p_cal = vm.loc[cal_idx, prob_col].values
         y_cal = vm.loc[cal_idx, target].values
@@ -180,6 +211,9 @@ def train(db_path=DB_PATH, model_path=MODEL_PATH):
             "model_win": model_win,
             "model_market_top3": model_m3,
             "model_market_win": model_m1,
+            **{f"model_{k}": m for k, m in pre_models.items()},
+            "pre_features": PRE_FEATURES,
+            "pre_market_features": PRE_MARKET_FEATURES,
             "features": FEATURES,
             "market_features": MARKET_FEATURES,
             "calibrators": calibrators,
@@ -198,6 +232,8 @@ def train(db_path=DB_PATH, model_path=MODEL_PATH):
         "auc_win": round(float(auc_win), 4),
         "auc_market_top3": round(float(auc_m3), 4),
         "auc_market_win": round(float(auc_m1), 4),
+        "auc_pre_top3": round(float(roc_auc_score(vm["top3"], vm["p_pre_top3"])), 4),
+        "auc_pre_win": round(float(roc_auc_score(vm["win"], vm["p_pre_win"])), 4),
         "model_top1_fukusho_rate": round(float(top1_by3["top3"].mean()), 4),
         "model_top1_win_rate": round(float(top1_by1["win"].mean()), 4),
         "market_top1_fukusho_rate": round(float(mtop1_by3["top3"].mean()), 4),

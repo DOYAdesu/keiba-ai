@@ -79,7 +79,11 @@ CREATE TABLE site_races_new (
     stage          TEXT,
     upset_basis    TEXT,
     million_n      INTEGER,
-    million_rules  TEXT
+    million_rules  TEXT,
+    field_json     TEXT,
+    updated_at     TEXT,
+    model          TEXT,
+    odds_at        TEXT
 );
 
 CREATE TABLE site_preds_new (
@@ -131,7 +135,10 @@ CREATE INDEX idx_site_preds_race ON site_preds(race_id);
 
 def _calibrate(bundle, key, prob):
     ir = bundle.get("calibrators", {}).get(key)
-    return np.clip(ir.predict(prob), 0.0, 1.0) if ir is not None else prob
+    if ir is None:
+        return prob
+    # 校正 (isotonic) は階段なので上位で同じ値が並ぶ。元の確率をごく少し足して順番を残す
+    return np.clip(ir.predict(prob) + 0.002 * np.asarray(prob), 0.0, 1.0)
 
 
 def score_all(db_path=DB_PATH, model_path=MODEL_PATH, date_from=None):
@@ -158,9 +165,15 @@ def score_all(db_path=DB_PATH, model_path=MODEL_PATH, date_from=None):
         X, meta = X[keep], meta[keep]
         if meta.empty:
             raise RuntimeError(f"{date_from} 以降のレースがありません。")
-    Xm = add_market_features(X, meta["odds"], meta["race_id"])
+    # 市場モデルのオッズは発走40分前のもの (実際に予想を出せた時点。無いレースは確定オッズ)。
+    # 確定オッズで答え合わせをすると実際より良く見えるため
+    from keiba.oddsmove import model_odds
+    odds_mk = model_odds(meta, db_path)
+    Xm = add_market_features(X, odds_mk, meta["race_id"])
 
     out = meta.copy()
+    # 荒れ度 (三連単の配当の見積もり) も40分前のオッズで出す
+    out["odds_for_upset"] = odds_mk.values
     ped = load_horses(db_path).drop_duplicates("horse_id").set_index("horse_id")
     out["sire"] = out["horse_id"].map(ped["sire_name"]) if not ped.empty else None
     out["dam_sire"] = out["horse_id"].map(ped["dam_sire_name"]) if not ped.empty else None
@@ -183,7 +196,9 @@ def score_all(db_path=DB_PATH, model_path=MODEL_PATH, date_from=None):
         out["race_id"]).transform(lambda s: s / s.sum())
     out["fair_odds"] = 1.0 / out["p_win"].replace(0, np.nan)
 
-    out["fuku_odds"] = predict_fukusho_odds(bundle.get("fuku_odds_model"), out)
+    pre_odds = out.assign(odds=odds_mk.values,
+                          popularity=odds_mk.groupby(out["race_id"]).rank(method="min").values)
+    out["fuku_odds"] = predict_fukusho_odds(bundle.get("fuku_odds_model"), pre_odds)
     out["ev_fuku"] = fukusho_ev(out["p_top3"], out["fuku_odds"])
 
     # 能力指数のもと: オッズを使わない能力モデルの複勝率
@@ -275,6 +290,8 @@ def _ai_upset(p_win):
     if len(p) < 4:
         return {}
     p = p / p.sum()
+    # 作ったオッズから戻した市場確率は p そのものなので、payout_probs が
+    # 返す説明変数 (頭数・集中度) もそのまま使える
     return payout_probs(p, 0.8 / p.clip(lower=1e-4), with_payout=False)
 
 
@@ -289,6 +306,11 @@ def _ai_upset(p_win):
 AI_THRESHOLDS = (1_000_000,)
 
 
+def _ai_feats(raw):
+    """_ai_upset が返した dict から較正用の説明変数を取り出す。"""
+    return {n: (raw or {}).get(f"f_{n}") for n in upset_mod.CALIB_FEATURES}
+
+
 def _map_upset(raw, ai_calib):
     """AIだけの荒れ度を、実際の三連単配当に合わせて較正する。
 
@@ -297,18 +319,20 @@ def _map_upset(raw, ai_calib):
     上端に張り付き、出すぎた数字になっていた。実配当を正解にする。
     """
     out = {100_000: None, 1_000_000: None, "max_payout": None}
+    feats = _ai_feats(raw)
     for t in AI_THRESHOLDS:
         v = raw.get(f"raw_{t}")
         if v is not None and ai_calib:
-            out[t] = upset_mod.calibrate(v, t, ai_calib)
+            out[t] = upset_mod.calibrate(v, t, ai_calib, feats)
     return out
 
 
 def _upset(g, upset_calib=None):
     """荒れ度 (高額配当の出やすさ)。オッズが出ていなければAIの勝率から見積もる。"""
     calib = upset_calib or {}
-    if g["odds"].notna().sum() >= max(4, len(g) // 2):
-        return payout_probs(g["p_win"], g["odds"],
+    odds = g["odds_for_upset"] if "odds_for_upset" in g.columns else g["odds"]
+    if odds.notna().sum() >= max(4, len(g) // 2):
+        return payout_probs(g["p_win"], odds,
                             calib=calib.get("market") or None), "market"
     return _map_upset(_ai_upset(g["p_win"]), calib.get("ai")), "ai"
 
@@ -357,9 +381,11 @@ def race_row(race_id, g, info, fuku_pay=None, trifecta_pay=None, in_sample=0,
         "p_hit_100k": upset[100_000],
         "p_hit_1m": upset[1_000_000],
         "max_payout": upset["max_payout"],
-        # 較正をあとから学習し直すための生の推定 (書き込む前に落とす)
+        # 較正をあとから学習し直すための生の推定と説明変数 (書き込む前に落とす)
         "_raw_100000": upset.get("raw_100000"),
         "_raw_1000000": upset.get("raw_1000000"),
+        "_f_ln_field": upset.get("f_ln_field"),
+        "_f_ln_herf": upset.get("f_ln_herf"),
         "upset_label": upset_label(upset[1_000_000]),
         "upset_basis": upset_basis,
         "reason": _reason(top, second_top3, len(g), pop_stats, extras),
@@ -408,6 +434,15 @@ def _fit_upset_calib(races, ai_raw, progress):
     if known.sum() < 500:
         progress("配当の分かるレースが少ないため荒れ度の較正は見送ります。")
         return out
+    # 較正に足す説明変数 (頭数・支持の集中度)。経路ごとに別の値になる
+    names = upset_mod.CALIB_FEATURES
+    featcols = {
+        "market": {n: pd.to_numeric(races.get(f"_f_{n}"), errors="coerce")
+                   for n in names},
+        "ai": {n: pd.Series([_ai_feats(r).get(n) for r in ai_raw],
+                            index=races.index, dtype=float)
+               for n in names},
+    }
     for t in (100_000, 1_000_000):
         hit = (pay >= t).astype(float)
         raws = {
@@ -415,21 +450,30 @@ def _fit_upset_calib(races, ai_raw, progress):
             "ai": pd.Series([(r or {}).get(f"raw_{t}") for r in ai_raw],
                             index=races.index, dtype=float),
         }
+        use = names if t in upset_mod.CALIB_FEATURE_THRESHOLDS else ()
         for name, raw in raws.items():
             m = known & raw.notna() & (raw > 0)
+            for n in use:
+                m = m & featcols[name][n].notna()
             if m.sum() < 500:
                 continue
-            a, b = upset_mod.fit_calibration(raw[m], hit[m])
-            out[name][str(t)] = [a, b]
-            est = np.mean([upset_mod.calibrate(v, t, {str(t): (a, b)})
-                           for v in raw[m]])
-            progress(f"荒れ度の較正 {name:>6} {t:>9,}円以上: "
-                     f"a={a:+.3f} b={b:+.3f} / 平均の推定 {est:.2%} "
-                     f"実測 {hit[m].mean():.2%} (n={int(m.sum()):,})")
+            feats = {n: featcols[name][n][m].to_numpy() for n in use}
+            coef = upset_mod.fit_calibration(
+                raw[m], hit[m], feats=feats, names=use)
+            out[name][str(t)] = coef
+            rows = [{n: feats[n][i] for n in use} for i in range(int(m.sum()))]
+            est = np.mean([upset_mod.calibrate(v, t, {str(t): coef}, f)
+                           for v, f in zip(raw[m], rows)])
+            shown = (" ".join(f"{k}={v:+.3f}" for k, v in
+                              zip(("logit",) + tuple(use) + ("切片",),
+                                  coef["coef"] if isinstance(coef, dict) else coef)))
+            progress(f"荒れ度の較正 {name:>6} {t:>9,}円以上: {shown} "
+                     f"/ 平均の推定 {est:.2%} 実測 {hit[m].mean():.2%} "
+                     f"(n={int(m.sum()):,})")
     return out
 
 
-def _upset_conditions(races, pay):
+def _upset_conditions(races, pay, fields=None):
     """100万超が「どんなレースで出たか」を条件別に数える (サイトの説明に出す)。
 
     手書きだと収集が進むたびに古くなるので、毎回実配当から作り直す。
@@ -450,7 +494,27 @@ def _upset_conditions(races, pay):
         ("芝ダ", d["surface"]),
         ("馬場", d["going"]),
     ]
+    if fields is not None:
+        f = fields.reset_index(drop=True)
+        f.index = d.index
+        gap = f["spd_gap"]
+        q1, q3 = gap.quantile(0.25), gap.quantile(0.75)
+        axes += [
+            ("能力指数80以上の馬", pd.cut(f["n_strong"], [-1, 1, 3, 5, 99],
+                                    labels=["0-1頭", "2-3頭", "4-5頭", "6頭以上"])),
+            ("走破タイム上位3頭の差", pd.cut(gap, [-1e9, q1, q3, 1e9],
+                                      labels=["拮抗（差が小さい25%）", "ふつう", "抜けた馬あり（差が大きい25%）"])),
+            ("前走3着以内の馬", pd.cut(f["n_good_last"], [-1, 2, 4, 6, 99],
+                                  labels=["0-2頭", "3-4頭", "5-6頭", "7頭以上"])),
+            ("逃げ馬", pd.cut(f["n_nige"], [-1, 0, 1, 2, 99], labels=["0頭", "1頭", "2頭", "3頭以上"])),
+            ("1番人気（40分前）", pd.cut(f["fav"], [0, 1.99, 2.99, 3.99, 9999],
+                                   labels=["2倍未満", "2倍台", "3倍台", "4倍以上"])),
+            ("AIの本命の勝率", pd.cut(f["top_ai"], [0, 0.15, 0.25, 0.4, 1],
+                                 labels=["15%未満", "15-25%", "25-40%", "40%以上"])),
+        ]
     out = {"base": round(base, 5), "n": int(len(d)), "axes": []}
+    if fields is not None:
+        out["gap_q"] = [round(float(q1), 2), round(float(q3), 2)]
     for name, key in axes:
         items = []
         for k, g in d.groupby(key, observed=True):
@@ -463,11 +527,20 @@ def _upset_conditions(races, pay):
                           "lift": round(rate / base, 2) if base else None})
         if items:
             items.sort(key=lambda x: -x["rate"])
-            out["axes"].append({"name": name, "items": items})
+            lo = min(it["rate"] for it in items)
+            out["axes"].append({"name": name, "items": items,
+                                "spread": round(max(it["rate"] for it in items) / max(lo, 1e-4), 2),
+                                "kind": "field" if name in FIELD_AXES else "race"})
+    # 効き目 (いちばん荒れる区分と堅い区分の差) の大きい順
+    out["axes"].sort(key=lambda a: -a["spread"])
     return out
 
 
-def _upset_check(races, ai_raw, calib, split_date, progress):
+FIELD_AXES = {"能力指数80以上の馬", "走破タイム上位3頭の差", "前走3着以内の馬", "逃げ馬",
+              "1番人気（40分前）", "AIの本命の勝率"}
+
+
+def _upset_check(races, ai_raw, calib, split_date, progress, fields=None):
     """荒れ度が実際の配当とどれだけ合っているかを、検証期間で5段階に分けて確かめる。
 
     サイトの説明文に出す数字もここで作る (手書きだと古くなるので)。
@@ -477,7 +550,8 @@ def _upset_check(races, ai_raw, calib, split_date, progress):
     known = pay.notna()
     if known.sum():
         report["base_rate"] = round(float((pay[known] >= 1_000_000).mean()), 5)
-        report["conditions"] = _upset_conditions(races[known], pay[known])
+        report["conditions"] = _upset_conditions(
+            races[known], pay[known], None if fields is None else fields[known.to_numpy()])
     for key, name, raw in (
         ("market", "オッズ込み",
          pd.to_numeric(races.get("_raw_1000000"), errors="coerce")),
@@ -491,7 +565,12 @@ def _upset_check(races, ai_raw, calib, split_date, progress):
             d = d[d["date"] > split_date]
         if len(d) < 200 or not ab:
             continue
-        d["est"] = [upset_mod.calibrate(v, 1_000_000, {"1000000": ab}) for v in d["raw"]]
+        if key == "market":   # 顔ぶれを足したあとの値 (サイトに出しているもの)
+            d["est"] = pd.to_numeric(races.loc[d.index, "p_hit_1m"], errors="coerce")
+        else:
+            fe = [_ai_feats(ai_raw[races.index.get_loc(i)]) for i in d.index]
+            d["est"] = [upset_mod.calibrate(v, 1_000_000, {"1000000": ab}, f)
+                        for v, f in zip(d["raw"], fe)]
         d["hit"] = d["pay"] >= 1_000_000
         try:
             d["q"] = pd.qcut(d["est"], 5, labels=["最も堅い", "堅い", "普通",
@@ -523,8 +602,12 @@ def _pace_check(races, pace_map, progress):
     progress("想定ペース × 実際のペース (行ごとの割合):\n" + tab.to_string())
 
 
+# サイトに載せる開催日の始まり (それより前の成績は特徴量・過去の同じレースにだけ使う)
+SITE_FROM = "2020-01-01"
+
+
 def build(db_path=DB_PATH, model_path=MODEL_PATH, date_from=None, progress=print):
-    preds, split_date = score_all(db_path, model_path, date_from)
+    preds, split_date = score_all(db_path, model_path, date_from or SITE_FROM)
     progress(f"{preds['race_id'].nunique()}レース / {len(preds)}頭を推論しました。")
 
     # 能力指数: 全出走馬の中での位置。対応表は upcoming でも使うので保存する
@@ -607,15 +690,33 @@ def build(db_path=DB_PATH, model_path=MODEL_PATH, date_from=None, progress=print
 
     # 荒れ度の較正を実配当から学習し直し、推定をその場で差し替える
     upset_calib = _fit_upset_calib(races, ai_raw, progress)
+    mkf = [{n: r for n, r in zip(upset_mod.CALIB_FEATURES, vals)}
+           for vals in zip(*(pd.to_numeric(races.get(f"_f_{n}"), errors="coerce")
+                             for n in upset_mod.CALIB_FEATURES))]
     for t, col in ((100_000, "p_hit_100k"), (1_000_000, "p_hit_1m")):
         ab = upset_calib["market"].get(str(t))
         if ab is None:
             continue
         races[col] = [None if pd.isna(v)
-                      else upset_mod.calibrate(float(v), t, {str(t): ab})
-                      for v in races[f"_raw_{t}"]]
+                      else upset_mod.calibrate(float(v), t, {str(t): ab}, f)
+                      for v, f in zip(races[f"_raw_{t}"], mkf)]
+    # 出走馬の顔ぶれ (実力馬の数・タイムの拮抗・前走好走馬・逃げ馬) を荒れ度に足す
+    from web import upset_fields
+    fields = upset_fields.race_fields(preds).reindex(races["race_id"]).reset_index(drop=True)
+    tpay = pd.to_numeric(races["trifecta_pay"], errors="coerce")
+    hit = np.where(tpay.notna(), (tpay >= 1_000_000).astype(float), np.nan)
+    is_mk = (races["upset_basis"] == "market").to_numpy()
+    learn = is_mk & (races["date"] <= (split_date or "9999")).to_numpy()
+    fmodel = upset_fields.fit(pd.to_numeric(races["p_hit_1m"], errors="coerce"), fields, hit, learn)
+    if fmodel:
+        adj = upset_fields.apply(pd.to_numeric(races["p_hit_1m"], errors="coerce"), fields, fmodel)
+        races["p_hit_1m"] = np.where(is_mk, adj, races["p_hit_1m"])
+        upset_calib["fields"] = fmodel
+        progress("荒れ度に顔ぶれを足しました: " + ", ".join(
+            f"{c}={v:+.2f}" for c, v in zip(["荒れ度"] + fmodel["cols"], fmodel["coef"])))
+    races["field_json"] = [upset_fields.to_json(r) for _, r in fields.iterrows()]
     races["upset_label"] = [upset_label(v) for v in races["p_hit_1m"]]
-    upset_report = _upset_check(races, ai_raw, upset_calib, split_date, progress)
+    upset_report = _upset_check(races, ai_raw, upset_calib, split_date, progress, fields)
     races = races[[c for c in races.columns if not c.startswith("_")]]
 
     # 100万馬券の法則 (scripts/million_rules.py で見つけたもの) に当てはまるか

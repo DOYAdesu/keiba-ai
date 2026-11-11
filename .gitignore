@@ -4,3 +4,5 @@ data/
 models/
 *.pyc
 dist/
+node_modules/
+.wrangler/

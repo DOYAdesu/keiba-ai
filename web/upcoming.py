@@ -31,6 +31,7 @@ from keiba.scraper import DB_PATH, JRA_PLACES
 from keiba.train import MODEL_PATH
 from web import insight, million
 from web.build import MARKS, PRED_COLS, enrich, race_row
+from keiba.upset import label as upset_label
 
 # JRA は1日に最大3場。探索は1場あたり十数秒かかるので、
 # 「過去の同じ月によく開催していた場」から順に当たる
@@ -133,18 +134,24 @@ def discover(date, db_path=DB_PATH, progress=print):
 
 def _calibrate(bundle, key, prob):
     ir = bundle.get("calibrators", {}).get(key)
-    return np.clip(ir.predict(prob), 0.0, 1.0) if ir is not None else prob
+    if ir is None:
+        return prob
+    # 校正 (isotonic) は階段なので上位で同じ値が並ぶ。元の確率をごく少し足して順番を残す
+    return np.clip(ir.predict(prob) + 0.002 * np.asarray(prob), 0.0, 1.0)
 
 
-def predict_one(race_id, ctx, as_of):
+def predict_one(race_id, ctx, as_of, source="auto"):
     """1レースを予想して (info, 1頭1行のDataFrame) を返す。
 
     オッズが出ていれば市場モデル、出ていなければ能力モデルを使う。
+    source="jv" は JRA-VAN の出馬表 (当日の速報で馬体重・オッズを更新済み) だけを使う。
     """
-    try:
-        info, entries = fetch_shutuba(race_id)
-    except Exception:
-        info, entries = None, None
+    info, entries = None, None
+    if source != "jv":
+        try:
+            info, entries = fetch_shutuba(race_id)
+        except Exception:
+            info, entries = None, None
     if entries is None or entries.empty:
         # netkeiba で取れなければ JRA-VAN の出馬表を使う (オッズは無い)
         info, entries = jv_entries(race_id, ctx.get("db_path", DB_PATH))
@@ -241,17 +248,23 @@ def score(race_id, info, entries, ctx, as_of):
     # オッズが出ていれば市場モデル (的中率が高い)、出ていなければ能力モデル。
     # 週の前半や、終わったレースの出馬表ページではオッズが載っていない。
     has_odds = entries["odds"].notna().sum() >= max(3, len(entries) // 2)
+    # 馬体重が発表されたら当日モデル、それまでは前日モデル (馬体重・馬場を使わずに学習)
+    has_weight = (not info.get("_toku")) and         entries["weight"].notna().sum() >= max(3, len(entries) // 2)
+    pre = "" if has_weight or "model_pre_top3" not in bundle else "pre_"
+    Xu = X[bundle["pre_features"]] if pre else X
     if has_odds:
         Xm = add_market_features(X, entries["odds"].values, [race_id] * len(entries))
-        p_top3 = _calibrate(bundle, "market_top3",
-                            bundle["model_market_top3"].predict_proba(Xm)[:, 1])
-        p_win_raw = _calibrate(bundle, "market_win",
-                               bundle["model_market_win"].predict_proba(Xm)[:, 1])
+        if pre:
+            Xm = Xm[bundle["pre_market_features"]]
+        p_top3 = _calibrate(bundle, f"{pre}market_top3",
+                            bundle[f"model_{pre}market_top3"].predict_proba(Xm)[:, 1])
+        p_win_raw = _calibrate(bundle, f"{pre}market_win",
+                               bundle[f"model_{pre}market_win"].predict_proba(Xm)[:, 1])
     else:
-        p_top3 = _calibrate(bundle, "top3",
-                            bundle["model_top3"].predict_proba(X)[:, 1])
-        p_win_raw = _calibrate(bundle, "win",
-                               bundle["model_win"].predict_proba(X)[:, 1])
+        p_top3 = _calibrate(bundle, f"{pre}top3",
+                            bundle[f"model_{pre}top3"].predict_proba(Xu)[:, 1])
+        p_win_raw = _calibrate(bundle, f"{pre}win",
+                               bundle[f"model_{pre}win"].predict_proba(Xu)[:, 1])
     p_top3 = np.clip(p_top3, 0.01, 0.97)
 
     out = pd.DataFrame({
@@ -295,6 +308,11 @@ def score(race_id, info, entries, ctx, as_of):
     p_ability = _calibrate(bundle, "top3", bundle["model_top3"].predict_proba(X)[:, 1])
     out["ability_idx"] = insight.to_index(p_ability, ctx["index_table"])
     out["style_ratio"] = X["avg_corner1_ratio5"].values
+    out["last_finish"] = X["last_finish"].values   # 荒れ度の「顔ぶれ」に使う
+    # 直前の買い候補 (keiba/value.py) で使う近走・騎手などの特徴量
+    from keiba.value import EXTRA
+    for c in EXTRA:
+        out["vx_" + c] = X[c].values
     out["style"] = [insight.style_of(v) for v in out["style_ratio"]]
     hdf = hist.df
     jt = [insight.jt_rate_asof(hdf, j, t, as_of) for j, t in zip(
@@ -329,6 +347,8 @@ def score(race_id, info, entries, ctx, as_of):
     out = out.sort_values(["p_win", "p_top3"], ascending=False).reset_index(drop=True)
     out["rank"] = np.arange(1, len(out) + 1)
     out["mark"] = [MARKS[r - 1] if r <= len(MARKS) else "" for r in out["rank"]]
+    out.attrs["model"] = "前日モデル" if pre else "当日モデル"
+    out.attrs["market"] = bool(has_odds)
     return out
 
 
@@ -350,7 +370,19 @@ def load_ctx(db_path=DB_PATH, model_path=MODEL_PATH):
     return ctx
 
 
-def _write(date, race_rows, pred_rows, db_path):
+# site_races に後から足した列 (web.build が作り直すと消えるので、書くたびに確かめる)
+LIVE_COLS = [("updated_at", "TEXT"), ("model", "TEXT"), ("odds_at", "TEXT"), ("field_json", "TEXT")]
+
+
+def _ensure_cols(conn):
+    have = {r[1] for r in conn.execute("PRAGMA table_info(site_races)")}
+    for c, t in LIVE_COLS:
+        if c not in have:
+            conn.execute(f"ALTER TABLE site_races ADD COLUMN {c} {t}")
+
+
+def _write(date, race_rows, pred_rows, db_path, only=False):
+    """only=True なら渡したレースだけ差し替える (当日の直前更新)。"""
     races = pd.DataFrame(race_rows)
     # 生の推定 (_raw_*) は較正の学習用なので書き込まない
     races = races[[c for c in races.columns if not c.startswith("_")]]
@@ -361,11 +393,18 @@ def _write(date, race_rows, pred_rows, db_path):
     preds = preds[PRED_COLS].replace({np.nan: None})
     conn = sqlite3.connect(db_path, timeout=120)
     try:
-        # site_preds を先に消す (site_races を先に消すと対象が見つからなくなる)
-        conn.execute(
-            "DELETE FROM site_preds WHERE race_id IN "
-            "(SELECT race_id FROM site_races WHERE date=?)", (str(date),))
-        conn.execute("DELETE FROM site_races WHERE date=?", (str(date),))
+        _ensure_cols(conn)
+        if only:
+            ids = list(races["race_id"])
+            ph = ",".join("?" * len(ids))
+            conn.execute(f"DELETE FROM site_preds WHERE race_id IN ({ph})", ids)
+            conn.execute(f"DELETE FROM site_races WHERE race_id IN ({ph})", ids)
+        else:
+            # site_preds を先に消す (site_races を先に消すと対象が見つからなくなる)
+            conn.execute(
+                "DELETE FROM site_preds WHERE race_id IN "
+                "(SELECT race_id FROM site_races WHERE date=?)", (str(date),))
+            conn.execute("DELETE FROM site_races WHERE date=?", (str(date),))
         races.to_sql("site_races", conn, if_exists="append", index=False)
         preds.to_sql("site_preds", conn, if_exists="append", index=False)
         conn.commit()
@@ -375,7 +414,7 @@ def _write(date, race_rows, pred_rows, db_path):
 
 
 def run(date, db_path=DB_PATH, model_path=MODEL_PATH, race_ids=None,
-        progress=print, ctx=None, stage="出馬表"):
+        progress=print, ctx=None, stage="出馬表", source="auto", only=False):
     """指定日のレースを予想して site_races / site_preds に入れる。
 
     stage="登録" のときは特別登録 (TK) の登録馬で予想する。
@@ -399,7 +438,7 @@ def run(date, db_path=DB_PATH, model_path=MODEL_PATH, race_ids=None,
                 info, entries = toku_entries(race_id, date, db_path, ctx["hist"])
                 out = None if entries is None else score(race_id, info, entries, ctx, as_of)
             else:
-                info, out = predict_one(race_id, ctx, as_of)
+                info, out = predict_one(race_id, ctx, as_of, source)
         except Exception as e:
             skipped.append(f"{race_id}: {e}")
             continue
@@ -413,7 +452,20 @@ def run(date, db_path=DB_PATH, model_path=MODEL_PATH, race_ids=None,
         row = race_row(race_id, out, info, pop_stats=ctx["pop_stats"],
                        extras=extras, extra_cols=extra_cols,
                        upset_calib=ctx.get("upset_calib"))
+        # 荒れ度に出走馬の顔ぶれを足す (事前計算と同じ係数)
+        from web import upset_fields
+        f = upset_fields.race_fields(out.assign(race_id=race_id))
+        # 登録段階は回避する馬も含むので、顔ぶれは出馬表が出てから
+        row["field_json"] = None if stage == "登録" else upset_fields.to_json(f.iloc[0])
+        fmodel = (ctx.get("upset_calib") or {}).get("fields")
+        if fmodel and row.get("upset_basis") == "market" and row.get("p_hit_1m") is not None:
+            row["p_hit_1m"] = float(upset_fields.apply([row["p_hit_1m"]], f, fmodel)[0])
+            row["upset_label"] = upset_label(row["p_hit_1m"])
         row["stage"] = stage
+        row["model"] = out.attrs.get("model")
+        row["updated_at"] = dt.datetime.now().strftime("%Y-%m-%d %H:%M")
+        if out.attrs.get("model") == "前日モデル" and stage != "登録":
+            row["reason"] += " ／ 前日モデル（馬体重の発表前）"
         h = out.assign(date=str(date), place=info.get("place"), race_no=info.get("race_no"),
                        race_name=info.get("race_name"), surface=info.get("surface"),
                        distance=info.get("distance"), going=info.get("going"),
@@ -428,6 +480,13 @@ def run(date, db_path=DB_PATH, model_path=MODEL_PATH, race_ids=None,
             row["reason"] += " ／ オッズ未発表のため能力モデルのみ"
         race_rows.append(row)
         pred_rows.append(out)
+        if stage != "登録":
+            try:
+                from keiba.value import save_feats
+                with sqlite3.connect(db_path, timeout=120) as vc:
+                    save_feats(vc, race_id, out)
+            except Exception as e:  # 直前の判定用。予想そのものは止めない
+                progress(f"直前判定用の特徴量を保存できませんでした: {e}")
         progress(f"[{i}/{len(race_ids)}] {info['place']}{info['race_no']}R "
                  f"◎{out.iloc[0]['horse_name']}")
 
@@ -437,7 +496,7 @@ def run(date, db_path=DB_PATH, model_path=MODEL_PATH, race_ids=None,
             progress(f"  {s_}")
         return {"races": 0}
 
-    n = _write(date, race_rows, pred_rows, db_path)
+    n = _write(date, race_rows, pred_rows, db_path, only=only)
     progress(f"{n}レースを site_races に追加しました"
              + (f" (見送り {len(skipped)}件)" if skipped else ""))
     return {"races": n, "skipped": skipped}
@@ -460,8 +519,10 @@ def run_week(start=None, days=7, db_path=DB_PATH, model_path=MODEL_PATH,
             continue
         ctx = ctx or load_ctx(db_path, model_path)
         stage = "出馬表" if full else "登録"
+        # JRA-VAN の出馬表は当日の速報 (web.live) で馬体重・オッズまで更新されるので、
+        # netkeiba には取りに行かない
         res = run(date, db_path, model_path, race_ids=list(full) or toku,
-                  progress=progress, ctx=ctx, stage=stage)
+                  progress=progress, ctx=ctx, stage=stage, source="jv")
         done.append((str(date), stage, res.get("races", 0)))
     if not done:
         progress("この先1週間に、出馬表も特別登録もまだありません。")

@@ -15,7 +15,58 @@
   --orange-bg: #fdf0df;
   --orange: #b4700f;
   --blue-bg: #e6f0fb;
+  --card: #ffffff;
+  --stripe: #fafcfe;
+  --chip: #eef1f4;
+  --barbg: #e3ecf6;
+  --faint: #a9b5c3;
+  --orange-line: #f1d38a;
+  --pink-line: #f1c4d3;
+  --blue-line: #c9dbf2;
+  --purple: #7a51c4;
+  --pp10: #2b3a4f;
+  --track1: #e7f3e5;
+  --track2: #d7ecd3;
+  --head: #1b365d;
+  color-scheme: light;
 }
+
+/* 暗い表示 (既定)。右上のボタンで明るい表示に切り替えられる */
+:root[data-theme="dark"] {
+  --navy: #22426b;
+  --navy-dark: #1a3456;
+  --line: #313b48;
+  --bg: #12161c;
+  --panel: #1f2731;
+  --text: #e2e8f0;
+  --muted: #94a2b4;
+  --link: #74b3ff;
+  --green: #63d08b;
+  --green-bg: #1b3325;
+  --pink-bg: #3b1f2a;
+  --pink: #ff86a5;
+  --orange-bg: #382b17;
+  --orange: #f2b45e;
+  --blue-bg: #1b2c43;
+  --card: #1a2029;
+  --stripe: #1d242e;
+  --chip: #2a333f;
+  --barbg: #2a3646;
+  --faint: #5f6c7d;
+  --orange-line: #6b5124;
+  --pink-line: #6e3346;
+  --blue-line: #2f4a6e;
+  --purple: #b894f5;
+  --pp10: #5c6f8a;
+  --track1: #1c3020;
+  --track2: #233d27;
+  --head: #9cc4ff;
+  color-scheme: dark;
+}
+:root[data-theme="dark"] .pop.pp10 { color: #fff; }
+:root[data-theme="dark"] .badge.grade.g1 { background: #2f63c4; }
+:root[data-theme="dark"] td.slowlap { color: var(--link); }
+:root[data-theme="dark"] .updbtns button[data-mode="full"] { color: var(--link); }
 
 * { box-sizing: border-box; }
 
@@ -72,11 +123,11 @@ nav.tabs a.active { background: var(--navy-dark); border-bottom-color: var(--acc
   font: inherit;
   padding: 3px 10px;
   border: 1px solid var(--line);
-  background: #fff;
+  background: var(--card);
   border-radius: 3px;
   cursor: pointer;
 }
-.viewtoggle button.on { background: var(--navy); color: #fff; border-color: var(--navy); }
+.viewtoggle button.on { background: var(--navy); color: #fff; border-color: var(--head); }
 
 /* --- セクション --- */
 h2.section {
@@ -103,7 +154,7 @@ th { background: var(--panel); font-weight: 700; white-space: nowrap; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 td.nw, th.nw { white-space: nowrap; }
 td.mid, th.mid { text-align: center; }
-tbody tr:nth-child(even) { background: #fafcfe; }
+tbody tr:nth-child(even) { background: var(--stripe); }
 .scroll { overflow-x: auto; }
 
 /* --- バッジ --- */
@@ -117,16 +168,19 @@ tbody tr:nth-child(even) { background: #fafcfe; }
 }
 .badge.rec { background: var(--green-bg); color: var(--green); }
 .badge.star { background: var(--blue-bg); color: var(--link); }
+/* 荒れ度のいちばん上 (特大荒れ)。f1 より目立たせるため色を反転させる。
+   明暗どちらのテーマでも pink と pink-bg は組みで足りる明るさ差がある。 */
+.badge.f0 { background: var(--pink); color: var(--pink-bg); }
 .badge.f1 { background: var(--pink-bg); color: var(--pink); }
 .badge.f2 { background: var(--orange-bg); color: var(--orange); }
 .badge.f3 { background: var(--blue-bg); color: var(--link); }
-.badge.fx { background: #eef1f4; color: var(--muted); }
-.badge.warn { background: #fff4e5; color: #9a6400; }
+.badge.fx { background: var(--chip); color: var(--muted); }
+.badge.warn { background: var(--orange-bg); color: var(--orange); }
 
 .mark { font-weight: 700; }
 .mark.m0 { color: var(--pink); }
 .mark.m1 { color: var(--orange); }
-.mark.m2 { color: #7a51c4; }
+.mark.m2 { color: var(--purple); }
 .mark.m3 { color: var(--muted); }
 
 .hit { display: inline-block; width: 20px; text-align: center; font-weight: 700; }
@@ -142,9 +196,9 @@ tbody tr:nth-child(even) { background: #fafcfe; }
 }
 .daynav a, .daynav span.off {
   padding: 8px 14px; border: 1px solid var(--line); border-radius: 3px;
-  color: var(--text); background: #fff;
+  color: var(--text); background: var(--card);
 }
-.daynav span.off { color: #c3ccd6; }
+.daynav span.off { color: var(--faint); }
 
 /* --- レース一覧カード --- */
 .venues { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
@@ -183,7 +237,7 @@ tbody tr:nth-child(even) { background: #fafcfe; }
 .rlinks a, .rlinks span {
   padding: 5px 12px; border: 1px solid var(--line); border-radius: 3px; font-size: 13px;
 }
-.rlinks span.cur { background: var(--navy); color: #fff; border-color: var(--navy); }
+.rlinks span.cur { background: var(--navy); color: #fff; border-color: var(--head); }
 
 .subtabs { display: flex; gap: 4px; border-bottom: 2px solid var(--line); margin: 18px 0 14px; }
 .subtabs button {
@@ -191,9 +245,9 @@ tbody tr:nth-child(even) { background: #fafcfe; }
   padding: 9px 16px; color: var(--muted); font-weight: 600;
   border-bottom: 3px solid transparent; margin-bottom: -2px;
 }
-.subtabs button.on { color: var(--text); border-bottom-color: var(--navy); }
+.subtabs button.on { color: var(--text); border-bottom-color: var(--head); }
 
-.bar { background: #e3ecf6; border-radius: 2px; height: 9px; min-width: 2px; }
+.bar { background: var(--barbg); border-radius: 2px; height: 9px; min-width: 2px; }
 .barcell { display: flex; align-items: center; gap: 6px; }
 .bar > i { display: block; height: 100%; background: var(--link); border-radius: 2px; }
 
@@ -217,7 +271,7 @@ body.sp .racehead, body.narrow .racehead { flex-direction: column; align-items: 
 td.reason { min-width: 280px; font-size: 12px; line-height: 1.5; }
 
 /* --- 絞り込みボタン (能力指数の場) --- */
-.rlinks.pills a.cur { background: var(--navy); color: #fff; border-color: var(--navy); }
+.rlinks.pills a.cur { background: var(--navy); color: #fff; border-color: var(--head); }
 th a.sorted { color: var(--text); text-decoration: underline; }
 
 /* --- ゲーム --- */
@@ -227,14 +281,14 @@ th a.sorted { color: var(--text); text-decoration: underline; }
 }
 .scoreboard > div:not(.vs) { display: flex; flex-direction: column; align-items: center; }
 .scoreboard span { color: var(--muted); font-size: 12px; }
-.scoreboard b { font-size: 26px; color: var(--navy); }
+.scoreboard b { font-size: 26px; color: var(--head); }
 .scoreboard small { color: var(--muted); }
 .scoreboard .vs { font-weight: 700; color: var(--muted); }
 .msgline { text-align: center; font-weight: 700; margin: 4px 0 14px; }
 select { font: inherit; padding: 3px 6px; border: 1px solid var(--line); border-radius: 3px; max-width: 220px; }
 .btn {
   font: inherit; padding: 6px 14px; border: 1px solid var(--line);
-  border-radius: 3px; background: #fff; cursor: pointer;
+  border-radius: 3px; background: var(--card); cursor: pointer;
 }
 .btn:hover { background: var(--panel); }
 
@@ -260,12 +314,12 @@ details.cond table { margin-bottom: 4px; }
 
 /* --- これからの開催 --- */
 .upcoming { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; margin: 6px 0 14px; }
-.upcoming .lbl { align-self: center; font-weight: 700; font-size: 13px; color: var(--navy); }
+.upcoming .lbl { align-self: center; font-weight: 700; font-size: 13px; color: var(--head); }
 .upcoming a {
   border: 1px solid var(--line); border-left: 4px solid var(--accent); border-radius: 3px;
   padding: 6px 12px; color: var(--text); display: flex; flex-direction: column; font-size: 13px;
 }
-.upcoming a.cur { background: var(--panel); border-left-color: var(--navy); }
+.upcoming a.cur { background: var(--panel); border-left-color: var(--head); }
 .upcoming a small { color: var(--muted); font-size: 11px; }
 .upcoming a small.gname { color: var(--pink); }
 
@@ -273,10 +327,10 @@ details.cond table { margin-bottom: 4px; }
 .badge.grade.g1 { background: #1d4fa8; color: #fff; }
 .badge.grade.g2 { background: #c2365c; color: #fff; }
 .badge.grade.g3 { background: #2f8a4e; color: #fff; }
-.badge.grade.gl { background: #eef1f4; color: var(--muted); }
+.badge.grade.gl { background: var(--chip); color: var(--muted); }
 
 /* --- 各レースの予想一覧 --- */
-h3.venue-h { margin: 16px 0 6px; font-size: 14px; color: var(--navy); }
+h3.venue-h { margin: 16px 0 6px; font-size: 14px; color: var(--head); }
 table.plist td { vertical-align: middle; }
 tr.click { cursor: pointer; }
 tr.click:hover { background: var(--blue-bg) !important; }
@@ -290,24 +344,24 @@ a.rrow.card .rhead { color: var(--link); }
 
 /* --- レースページの予想まとめ --- */
 .predbox { border: 2px solid var(--navy); border-radius: 4px; padding: 12px 14px; margin: 14px 0; }
-.predbox h2 { margin: 0 0 8px; font-size: 16px; color: var(--navy); }
+.predbox h2 { margin: 0 0 8px; font-size: 16px; color: var(--head); }
 .predbox h3 { margin: 14px 0 6px; font-size: 14px; }
 .predbox .why { font-size: 13px; background: var(--panel); padding: 8px 10px; border-radius: 3px; margin: 10px 0 0; }
 
 /* --- 並び順 --- */
 .sortbar { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); margin: -6px 0 10px; }
 .sortbar button {
-  font: inherit; padding: 3px 12px; border: 1px solid var(--line); background: #fff;
+  font: inherit; padding: 3px 12px; border: 1px solid var(--line); background: var(--card);
   border-radius: 3px; cursor: pointer; color: var(--text);
 }
-.sortbar button.on { background: var(--navy); color: #fff; border-color: var(--navy); }
-.sortbar button:disabled { color: #c3ccd6; cursor: not-allowed; }
+.sortbar button.on { background: var(--navy); color: #fff; border-color: var(--head); }
+.sortbar button:disabled { color: var(--faint); cursor: not-allowed; }
 
 /* --- 推奨買い目 --- */
 td.betcell { font-size: 12px; min-width: 220px; }
 .hitpay { color: var(--pink); }
 .miss { color: var(--muted); }
-tr.ph td { color: #9aa8b8; background: #fafbfc; font-size: 12px; }
+tr.ph td { color: var(--faint); background: var(--stripe); font-size: 12px; }
 .rrow.ph { opacity: .55; }
 .recbox { border: 1px solid var(--line); border-left: 5px solid var(--muted); border-radius: 3px; padding: 8px 12px; margin: 12px 0 4px; }
 .recbox.rec { border-left-color: var(--green); }
@@ -317,7 +371,7 @@ tr.ph td { color: #9aa8b8; background: #fafbfc; font-size: 12px; }
 /* --- この日の注目 --- */
 .hl { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 8px; }
 .hlcol { border: 1px solid var(--line); border-radius: 3px; padding: 8px 12px; }
-.hlcol h3 { margin: 2px 0 6px; font-size: 14px; color: var(--navy); }
+.hlcol h3 { margin: 2px 0 6px; font-size: 14px; color: var(--head); }
 .hlcol h3 small { color: var(--muted); font-weight: 400; }
 .hlcol ul { list-style: none; margin: 0; padding: 0; }
 .hlcol li { padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; }
@@ -331,17 +385,17 @@ body.sp .hl { grid-template-columns: 1fr; }
 /* --- 能力指数タブ --- */
 table.idxtable td, table.idxtable th { padding: 6px 8px; }
 table.idxtable td.idx { font-size: 14px; }
-table.idxtable td.na { color: #a9b5c3; }
+table.idxtable td.na { color: var(--faint); }
 table.idxtable tbody tr:nth-child(even) { background: none; }
 .idxnote { line-height: 1.7; }
 .rlinks.between { justify-content: space-between; border: none; }
 .rlinks.between > span { display: flex; flex-wrap: wrap; gap: 6px; }
 .rlinks.between > span { border: none; padding: 0; }
-h3.sub { font-size: 13px; margin: 6px 0; color: var(--navy); }
+h3.sub { font-size: 13px; margin: 6px 0; color: var(--head); }
 
 /* 100万馬券の法則 */
-.badge.mk { background: #fff1e0; color: #b45309; border: 1px solid #f5c48a; }
-b.mk { color: #b45309; }
+.badge.mk { background: var(--orange-bg); color: var(--orange); border: 1px solid var(--orange-line); }
+b.mk { color: var(--orange); }
 .mbox { margin: 8px 0 12px; }
 .mrules { font-size: 12px; color: var(--muted); }
 .mtable td.mrules { min-width: 220px; }
@@ -349,7 +403,7 @@ b.mk { color: #b45309; }
 /* 回顧 */
 .reviewbox { background: var(--panel); border-radius: 8px; padding: 10px 14px; margin: 8px 0 12px; }
 .reviewbox p { margin: 4px 0; line-height: 1.7; }
-.reviewbox b { display: inline-block; min-width: 5.5em; color: var(--navy); }
+.reviewbox b { display: inline-block; min-width: 5.5em; color: var(--head); }
 .ped.prev { color: var(--text); }
 .ped.prev .badge { font-size: 10px; padding: 0 5px; }
 table.laps th, table.laps td { padding: 4px 6px; font-size: 12px; }
@@ -361,3 +415,115 @@ table.paytable td { vertical-align: top; line-height: 1.6; }
 details.help { margin: 10px 0; font-size: 13px; }
 details.help summary { cursor: pointer; color: var(--link); }
 details.help p { line-height: 1.7; }
+
+/* オッズの動き */
+.oa { margin-left: 2px; font-weight: 700; }
+.oa.dn, .oa.dn2 { color: var(--pink); }
+.oa.up, .oa.up2 { color: var(--link); }
+td.odn { color: var(--pink); font-weight: 700; }
+td.oup { color: var(--link); }
+table.oddsmv th, table.oddsmv td { padding: 4px 6px; font-size: 12px; }
+.rmeta.baba { color: var(--text); }
+.note.live { background: var(--green-bg); border-radius: 6px; padding: 6px 10px; }
+.badge.small { font-size: 10px; padding: 0 5px; }
+/* シミュレーション */
+.simbox { margin: 8px 0; }
+.simctl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.simctl select { font-size: 13px; padding: 4px; }
+.btn { background: var(--navy); color: #fff; border: 0; border-radius: 6px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
+.btn.sub { background: var(--panel); color: var(--head); border: 1px solid var(--line); }
+.track { position: relative; background: linear-gradient(90deg, var(--track1) 0, var(--track2) 100%); border-radius: 8px;
+  padding: 4px 0; margin: 6px 0; border-right: 3px solid #c2365c; overflow: hidden; }
+.track .lane { height: 20px; position: relative; border-bottom: 1px dashed rgba(0,0,0,.06); }
+.track .chip { position: absolute; left: 2px; top: 1px; width: 24px; height: 18px; border-radius: 9px;
+  font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+  border: 1px solid rgba(0,0,0,.35); will-change: transform; }
+.simlabel { min-height: 1.4em; }
+.subtabs.small button { font-size: 12px; padding: 3px 10px; }
+tr.hitrow td { background: var(--green-bg); }
+td.small, .small { font-size: 11px; }
+td.muted { color: var(--muted); }
+
+tr.fieldrow td { background: var(--stripe); }
+.up-lift { color: var(--pink); font-size: 11px; font-weight: 700; }
+.dn-lift { color: var(--link); font-size: 11px; }
+
+/* 近走 (馬柱) */
+table.pasttab td.run { min-width: 92px; font-size: 11px; line-height: 1.35; vertical-align: top; border-left: 1px solid var(--line); }
+table.pasttab td.run .rd { color: var(--muted); white-space: nowrap; }
+table.pasttab td.run .rf b { font-size: 15px; }
+table.pasttab td.run .rx { color: var(--muted); white-space: nowrap; }
+table.pasttab td.run.r1 { background: var(--pink-bg); }
+table.pasttab td.run.r1 .rf b { color: var(--pink); }
+table.pasttab td.run.r3 { background: var(--blue-bg); }
+table.pasttab td.run.r3 .rf b { color: var(--link); }
+table.pasttab td.run.r5 { background: var(--stripe); }
+/* お気に入り */
+button.fav { border: 0; background: none; color: var(--faint); cursor: pointer; font-size: 15px; padding: 0 2px; line-height: 1; }
+button.fav.on { color: #e8a317; }
+.topboxes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin: 10px 0; }
+.recentbox, .favbox { background: var(--panel); border-radius: 8px; padding: 8px 12px; }
+.recentbox h3, .favbox h3 { margin: 4px 0 6px; font-size: 15px; }
+.favbox ul { margin: 0; padding-left: 18px; line-height: 1.8; }
+.titlebar .upd { font-size: 11px; font-weight: 400; opacity: .8; margin-left: 10px; }
+/* スマホ: タブが8つになったので折り返さず横にずらせるようにする */
+@media (max-width: 600px) {
+  body:not(.pc) nav.tabs { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  body:not(.pc) nav.tabs::-webkit-scrollbar { display: none; }
+  body:not(.pc) nav.tabs a { flex: 0 0 auto; white-space: nowrap; padding: 11px 12px; font-size: 13px; }
+}
+body.sp nav.tabs { overflow-x: auto; scrollbar-width: none; }
+body.sp nav.tabs a { flex: 0 0 auto; white-space: nowrap; padding: 11px 12px; }
+
+/* 直前の買い候補 */
+.valuebox { background: var(--orange-bg); border: 1px solid var(--orange-line); border-radius: 8px; padding: 8px 12px; margin: 10px 0; }
+.valuebox h3 { margin: 4px 0 6px; font-size: 15px; }
+.valuebox ul { margin: 4px 0; padding-left: 18px; line-height: 1.8; }
+
+/* 過去の同じレースの人気 */
+.pop { display: inline-block; min-width: 22px; padding: 1px 4px; border-radius: 4px; font-weight: 700; }
+.pop.pp1 { background: var(--pink-bg); color: var(--pink); }
+.pop.pp3 { background: var(--orange-bg); color: var(--orange); }
+.pop.pp5 { background: var(--blue-bg); color: var(--link); }
+.pop.pp9 { background: var(--chip); color: var(--text); }
+.pop.pp10 { background: var(--pp10); color: #fff; }
+
+/* --- 荒れやすい / 堅い レース --- */
+.upsetbox { border: 1px solid var(--line, #dde3ea); border-radius: 6px; padding: 8px 12px; margin: 8px 0 12px; }
+.upsetbox.hot { border-color: var(--pink-line); background: var(--pink-bg); }
+.upsetbox.cold { border-color: var(--blue-line); background: var(--blue-bg); }
+.upsetbox ul { margin: 4px 0; padding-left: 18px; }
+.upsetbox .note { margin: 4px 0 0; }
+.jlist { padding-left: 18px; }
+.jlist li { margin: 3px 0; }
+
+/* --- 更新ボタン --- */
+.titlebar .updbtn { margin-left: 10px; font-size: 11px; padding: 1px 8px; border-radius: 3px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--card); color: var(--link); font-weight: 600; }
+.titlebar .updbtn:hover { background: var(--blue-bg); }
+.updpanel { position: fixed; top: 44px; right: 12px; z-index: 50; width: min(360px, calc(100vw - 32px));
+  background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.15); font-size: 13px; }
+.updpanel p { margin: 4px 0; }
+.updhead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+.updx { border: none; background: none; font-size: 18px; cursor: pointer; color: var(--muted); }
+.updpanel label { display: block; margin: 6px 0; }
+.updpanel input { width: 100%; box-sizing: border-box; padding: 5px 7px; font-size: 14px; margin-top: 2px; }
+.updbtns { display: flex; gap: 8px; margin: 8px 0 4px; flex-wrap: wrap; }
+.updbtns button, .updreload { padding: 6px 10px; border-radius: 4px; border: 1px solid #2b6cb0; background: #2b6cb0;
+  color: #fff; cursor: pointer; font-size: 13px; }
+.updbtns button[data-mode="full"] { background: var(--card); color: #2b6cb0; }
+.updbtns button:disabled { opacity: .45; cursor: default; }
+.updreload { margin: 4px 0; background: #2f855a; border-color: #2f855a; }
+.updmsg { background: var(--orange-bg); padding: 4px 8px; border-radius: 4px; }
+
+/* 印の欄: 馬番 (枠の色) と馬名を大きく */
+.plist td.horse { font-size: 15px; }
+.plist td.horse b { font-weight: 700; }
+.plist td.horse small { font-size: 11px; color: var(--muted); }
+.hno { display: inline-block; min-width: 24px; padding: 0 4px; margin-right: 5px; border-radius: 3px;
+  text-align: center; font-weight: 700; font-size: 14px; line-height: 22px; border: 1px solid rgba(128,128,128,.45);
+  font-variant-numeric: tabular-nums; }
+.plist td.horse .sub { display: inline-block; margin-right: 8px; }
+.themebtn { margin-left: 6px; font-size: 12px; padding: 1px 8px; border-radius: 3px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--card); color: var(--text); }

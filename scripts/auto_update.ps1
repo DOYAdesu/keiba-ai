@@ -65,9 +65,21 @@ try {
     if ($jvOk) {
         # 出馬表が出る前 (日〜水) でも、特別レースの登録馬は分かる
         Invoke-Step '特別登録の取り込み' $py @('-m', 'keiba.jvlink', 'toku', $since) | Out-Null
+        # 今日・明日のレースの馬体重・オッズ・取消など (速報)
+        Invoke-Step '当日速報の取り込み' $py @('-m', 'web.live', '--import-only') | Out-Null
+        # 終わったレースの時系列オッズ (前日最終・40分前など。オッズの動きの表に使う)
+        Invoke-Step '時系列オッズの取り込み' $py @('-m', 'keiba.jvlink', 'oddshist', $since) | Out-Null
     }
+    # 今週のクッション値・含水率 (JRA の馬場情報ページ)
+    Invoke-Step '馬場情報 (クッション値)' $py @('-m', 'keiba.baba', 'current') | Out-Null
     if (-not $jvOk) {
-        Write-Log 'JRA-VAN が使えないため netkeiba だけで更新します (利用キーの期限を確認してください)'
+        # 原因はログの code で分かる: -504=JRA-VAN のメンテナンス (火曜朝など。次回に自動で取り直す)、
+        # -301/-302/-303=利用キー (本人が JV-Link の設定画面で入れ直す)
+        $last = Get-Content $log -Tail 40 -Encoding utf8 | Select-String 'code=(-\d+)' | Select-Object -Last 1
+        $code = if ($last) { $last.Matches[0].Groups[1].Value } else { '?' }
+        $why = switch ($code) { '-504' { 'JRA-VAN のメンテナンス中' } { $_ -in '-301','-302','-303' } { '利用キーの問題 (期限・未設定)' } default { "code=$code" } }
+        Write-Log "JRA-VAN が使えないため netkeiba だけで更新します ($why)"
+
     }
 
     # 2. netkeiba で取りこぼしを補う。取得済みはスキップされるので軽い。
@@ -89,10 +101,20 @@ try {
         Copy-Item $model (Join-Path $root 'models\model_prev.pkl') -Force -ErrorAction SilentlyContinue
         Invoke-Step 'AIの再学習' $py @('-m', 'keiba.train') | Out-Null
         Invoke-Step '100万馬券の法則の見直し' $py @((Join-Path $root 'scripts\million_rules.py'), '--save') | Out-Null
+        # 過去の馬場情報 (開催ごとの PDF は木曜に更新される)
+        Invoke-Step '馬場情報の過去分' $py @('-m', 'keiba.baba', 'archive', "$yearFrom", "$year") | Out-Null
+        # オッズの動きの実績
+        Invoke-Step 'オッズの動きの実績' $py @('-m', 'keiba.oddsmove') | Out-Null
     }
 
     # 3. 予想の事前計算 (ここが失敗したら以降は無意味なので止める)
     if (-not (Invoke-Step '予想の事前計算' $py @('-m', 'web.build'))) { exit 1 }
+    # 展開シミュレーションの物差し (事前計算の予想から作るので build のあと)
+    if ((Get-Date).DayOfWeek -eq 'Monday' -and (Get-Date).Hour -lt 12) {
+        Invoke-Step 'シミュレーションの物差し' $py @('-m', 'keiba.sim') | Out-Null
+        # 直前の買い候補の係数 (年ごとの前向き検証も作り直す)
+        Invoke-Step '直前の買い候補の学習' $py @('-m', 'keiba.value') | Out-Null
+    }
 
     # 4. これからの1週間 (土日の両方) を予想する。
     #    出馬表が出ている日は全レース、まだの日は特別登録の特別レースだけ。

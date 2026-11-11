@@ -168,8 +168,72 @@ def bstr_to_bytes(s, expected=None):
     return latin
 
 
+# JV-Link はサーバのメンテナンス中だと「サーバメンテナンス中です。」という OK だけの
+# ダイアログを出し、OK が押されるまで処理が止まる (2026-11-10 に当日更新が止まった)。
+# 自動の取得が固まらないよう、自分のプロセスのこのダイアログだけ OK を押して閉じる。
+# 利用キーの設定画面など、ほかのダイアログには触らない。
+AUTO_CLOSE_TEXTS = ("メンテナンス",)
+
+
+def _start_dialog_watcher():
+    import os
+    import threading
+
+    try:
+        import win32api
+        import win32con
+        import win32gui
+        import win32process
+    except Exception:
+        return
+    pid = os.getpid()
+
+    def texts(hwnd):
+        out = []
+        win32gui.EnumChildWindows(hwnd, lambda h, acc: acc.append(win32gui.GetWindowText(h)), out)
+        return out
+
+    def check(hwnd, _):
+        try:
+            if not win32gui.IsWindowVisible(hwnd) or win32gui.GetClassName(hwnd) != "#32770":
+                return True
+            if win32process.GetWindowThreadProcessId(hwnd)[1] != pid:
+                return True
+            body = " ".join(texts(hwnd))
+            if any(t in body for t in AUTO_CLOSE_TEXTS):
+                # OK ボタンの ID は IDOK ではない (2 = IDCANCEL) ので、ボタンそのものを押す
+                btn = win32gui.FindWindowEx(hwnd, 0, "Button", None)
+                if btn:
+                    win32api.PostMessage(btn, win32con.BM_CLICK, 0, 0)
+                else:
+                    win32api.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
+                if not _CLOSED:
+                    log(f"JV-Link のお知らせを閉じました: {body.strip()}")
+                _CLOSED.append(time.time())
+        except Exception:
+            pass
+        return True
+
+    def loop():
+        while True:
+            try:
+                win32gui.EnumWindows(check, None)
+            except Exception:
+                pass
+            time.sleep(1.0)
+
+    threading.Thread(target=loop, daemon=True).start()
+
+
+_WATCHER = []
+_CLOSED = []   # 閉じた時刻 (メンテナンス中かの判定に使う)
+
+
 class JVLink:
     def __init__(self):
+        if not _WATCHER:
+            _start_dialog_watcher()
+            _WATCHER.append(True)
         import pythoncom
         import win32com.client
 
@@ -196,6 +260,9 @@ class JVLink:
         result = self.jv.JVRTOpen(dataspec, key)
         ret = result[0] if isinstance(result, tuple) else result
         if ret in (-1, -303, -403, -411, -412, -431):
+            return -1
+        if ret == -504:
+            log("JRA-VAN サーバメンテナンス中のため取得できません (code=-504)")
             return -1
         if ret < 0:
             raise RuntimeError(f"JVRTOpen 失敗 (code={ret})")
@@ -1042,13 +1109,401 @@ def cmd_probe(from_yyyymmdd, limit=5):
     log("probe 終了 (DB には書き込んでいません)")
 
 
+# ---------------------------------------------------------------- オッズ
+# O1: 単複枠オッズ。JV_O1_ODDS_TANFUKUWAKU 準拠 (0始まりの位置)
+#   データ区分=2 / 発表月日時分 27〜35 / 単勝[28] 43〜 (馬番2・オッズ4・人気2)
+#   複勝[28] 267〜 (馬番2・最低4・最高4・人気2)
+#   データ区分: 1=中間 2=前日売最終 3=最終 4=確定 5=確定(月曜) 9=中止
+O1_WIN_START, O1_WIN_LEN = 43, 8
+O1_PLC_START, O1_PLC_LEN = 267, 12
+
+ODDS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS odds_hist (
+    race_id TEXT, tag TEXT, at TEXT, win TEXT, pop TEXT, plo TEXT, phi TEXT,
+    PRIMARY KEY (race_id, tag)
+);
+CREATE TABLE IF NOT EXISTS odds_live (
+    race_id TEXT, at TEXT, kubun TEXT, win TEXT, pop TEXT, plo TEXT, phi TEXT,
+    PRIMARY KEY (race_id, at)
+);
+CREATE TABLE IF NOT EXISTS odds_combo (
+    race_id TEXT, bet_type TEXT, combo TEXT, odds REAL, odds_hi REAL, pop INTEGER, at TEXT,
+    PRIMARY KEY (race_id, bet_type, combo)
+);
+"""
+
+
+def _odds_num(t, scale=10.0):
+    t = t.strip()
+    if not t.isdigit() or int(t) == 0:
+        return None  # 0000=発売なし、----/****=取消・除外
+    return int(t) / scale
+
+
+def _odds_at(race_ymd, mmddhhmm):
+    """発表月日時分 → 'YYYY-MM-DD HH:MM'。前日発売が年をまたぐときは前年。"""
+    if not mmddhhmm.isdigit() or mmddhhmm == "00000000":
+        return None
+    year = int(race_ymd[:4])
+    if mmddhhmm[:4] > race_ymd[4:8] and race_ymd[4:6] == "01":
+        year -= 1
+    m = mmddhhmm
+    return f"{year}-{m[:2]}-{m[2:4]} {m[4:6]}:{m[6:8]}"
+
+
+def parse_o1(raw):
+    if len(raw) < O1_PLC_START + 28 * O1_PLC_LEN:
+        return None
+    ymd = _s(raw, 11, 19)
+    race_id = _s(raw, 11, 15) + _s(raw, 19, 27)
+    win, pop, plo, phi = {}, {}, {}, {}
+    for i in range(28):
+        b = O1_WIN_START + i * O1_WIN_LEN
+        no = _int(_s(raw, b, b + 2))
+        if no:
+            o = _odds_num(_s(raw, b + 2, b + 6))
+            if o:
+                win[no] = o
+                pop[no] = _int(_s(raw, b + 6, b + 8))
+        b = O1_PLC_START + i * O1_PLC_LEN
+        no = _int(_s(raw, b, b + 2))
+        if no:
+            lo = _odds_num(_s(raw, b + 2, b + 6))
+            if lo:
+                plo[no] = lo
+                phi[no] = _odds_num(_s(raw, b + 6, b + 10))
+    return {
+        "race_id": race_id, "ymd": ymd, "kubun": _s(raw, 2, 3),
+        "at": _odds_at(ymd, _s(raw, 27, 35)),
+        "win": win, "pop": pop, "plo": plo, "phi": phi,
+    }
+
+
+def _csv(d, fmt="{:g}"):
+    if not d:
+        return ""
+    n = max(d)
+    return ",".join("" if d.get(i) is None else fmt.format(d[i]) for i in range(1, n + 1))
+
+
+def _odds_row(o):
+    return (_csv(o["win"]), _csv(o["pop"], "{}"), _csv(o["plo"]), _csv(o["phi"]))
+
+
+def _minus(at, minutes):
+    import datetime as _dt
+    t = _dt.datetime.strptime(at, "%Y-%m-%d %H:%M") - _dt.timedelta(minutes=minutes)
+    return t.strftime("%Y-%m-%d %H:%M")
+
+
+HIST_TAGS = (60, 40, 20, 10, 5)
+
+
+def pick_snapshots(recs):
+    """時系列の中から 前日最終・当日朝一・発走N分前・最終 を選ぶ。返り値: ({tag: rec}, 発走時刻)"""
+    recs = sorted((r for r in recs if r["at"] and r["win"]), key=lambda r: (r["at"], r["kubun"]))
+    if not recs:
+        return {}, None
+    rdate = f"{recs[0]['ymd'][:4]}-{recs[0]['ymd'][4:6]}-{recs[0]['ymd'][6:8]}"
+    out = {}
+    fin = [r for r in recs if r["kubun"] in ("4", "5")] or [r for r in recs if r["kubun"] == "3"] or recs[-1:]
+    out["fin"] = fin[-1]
+    last = [r for r in recs if r["kubun"] == "3"]
+    mids = [r for r in recs if r["kubun"] in ("1", "2")]
+    post = last[0]["at"] if last else (mids[-1]["at"] if mids else None)
+    before = [r for r in mids if r["at"][:10] < rdate]
+    if before:
+        out["pre"] = before[-1]
+    # 時系列は夜通し続くので「当日朝」は 7時以降の最初
+    today = [r for r in mids if r["at"][:10] == rdate and r["at"][11:13] >= "07"]
+    if today:
+        out["am"] = today[0]
+    if post:
+        for n in HIST_TAGS:
+            lim = _minus(post, n)
+            cand = [r for r in mids if r["at"] <= lim]
+            if cand:
+                out[f"t{n}"] = cand[-1]
+    return out, post
+
+
+def _locked():
+    return any((PROJECT_ROOT / "data" / n).exists() for n in ("auto_update.lock", "live_update.lock"))
+
+
+def _wait_for_locks():
+    """自動更新・当日更新が JV-Link を使っている間は待つ (同時に使わない)。"""
+    locks = [PROJECT_ROOT / "data" / "auto_update.lock", PROJECT_ROOT / "data" / "live_update.lock"]
+    waited = False
+    while any(l.exists() for l in locks):
+        if not waited:
+            log("他の更新が JV-Link を使用中のため待機します")
+            waited = True
+        time.sleep(30)
+
+
+def cmd_oddshist(list_path, db_path, wait=True):
+    """時系列オッズ (0B41) から過去レースの要所のオッズを取り込む。
+
+    list_path: 1行に "race_id<TAB>YYYYMMDD"。取得済み (fin/none がある) は飛ばす。
+    """
+    conn = open_db(db_path)
+    conn.executescript(ODDS_SCHEMA)
+    done = {r[0] for r in conn.execute(
+        "SELECT race_id FROM odds_hist WHERE tag IN ('fin','none')")}
+    todo = []
+    for line in Path(list_path).read_text(encoding="utf-8").splitlines():
+        parts = line.strip().split("\t")
+        if len(parts) == 2 and parts[0] not in done:
+            todo.append(parts)
+    log(f"時系列オッズ: {len(todo)}レースを取得します")
+    jv = None
+    n_ok = 0
+    try:
+        for i, (rid, ymd) in enumerate(todo):
+            # 自動更新・当日更新・手動の取り込みが始まったら、すぐに JV-Link を手放して待つ
+            busy = wait and _locked()
+            if i % 50 == 0 or busy:
+                if jv is not None:
+                    jv.close()
+                    jv = None
+                if wait:
+                    _wait_for_locks()
+            if jv is None:
+                jv = JVLink()
+                jv.init()
+            key = ymd + rid[4:]
+            recs = []
+            if jv.rt_open("0B41", key) != -1:
+                for spec, raw in jv.read_records():
+                    if spec == "O1":
+                        o = parse_o1(raw)
+                        if o:
+                            recs.append(o)
+            jv.close()
+            snaps, post = pick_snapshots(recs)
+            if not snaps:
+                conn.execute("INSERT OR REPLACE INTO odds_hist (race_id, tag) VALUES (?, 'none')", (rid,))
+            else:
+                for tag, o in snaps.items():
+                    conn.execute("INSERT OR REPLACE INTO odds_hist VALUES (?,?,?,?,?,?,?)",
+                                 (rid, tag, o["at"]) + _odds_row(o))
+                n_ok += 1
+                if post:
+                    conn.execute("UPDATE races SET post_time=? WHERE race_id=? AND post_time IS NULL",
+                                 (post[11:], rid))
+            if i % 20 == 19:
+                conn.commit()
+            if i % 200 == 199:
+                log(f"  {i + 1}/{len(todo)} (取得 {n_ok})")
+        conn.commit()
+        log(f"時系列オッズ: 完了 {n_ok}/{len(todo)}")
+    finally:
+        if jv is not None:
+            jv.close()
+        conn.close()
+
+
+# ---------------------------------------------------------------- 当日の速報
+def _rid(raw):
+    """速報レコードの RaceID (位置11〜27) → 12桁の race_id"""
+    return _s(raw, 11, 15) + _s(raw, 19, 27)
+
+
+def parse_wh(raw):
+    """WH: 馬体重。馬番2・馬名36・体重3・符号1・増減3 が45バイト間隔 (35〜)"""
+    out = []
+    for i in range(18):
+        b = 35 + i * 45
+        if b + 45 > len(raw):
+            break
+        no = _int(_s(raw, b, b + 2))
+        if not no:
+            continue
+        w = _s(raw, b + 38, b + 41)
+        fugo, sa = _s(raw, b + 41, b + 42), _s(raw, b + 42, b + 45)
+        weight = float(w) if w.isdigit() and w not in ("000", "999") else None
+        diff = None
+        if weight is not None and sa.isdigit() and sa != "999":
+            diff = float(sa) * (-1 if fugo == "-" else 1)
+        out.append((no, weight, diff))
+    return _rid(raw), out
+
+
+def _combo_records(spec, raw):
+    """O2〜O6 を (券種, 組番, オッズ, 上限, 人気) の list にする。"""
+    # 券種: (先頭位置, 件数, 1件の長さ, 組番の桁, オッズの桁, 上限オッズの桁, 人気の桁)
+    spec_map = {
+        "O2": ("馬連", 40, 153, 13, 4, 6, 0, 3),
+        "O3": ("ワイド", 40, 153, 17, 4, 5, 5, 3),
+        "O4": ("馬単", 40, 306, 13, 4, 6, 0, 3),
+        "O5": ("三連複", 40, 816, 15, 6, 6, 0, 3),
+        "O6": ("三連単", 40, 4896, 17, 6, 7, 0, 4),
+    }
+    if spec not in spec_map:
+        return []
+    name, start, n, ln, kw, ow, hw, pw = spec_map[spec]
+    out = []
+    for i in range(n):
+        b = start + i * ln
+        if b + ln > len(raw):
+            break
+        kumi = _s(raw, b, b + kw)
+        if not kumi.isdigit() or int(kumi) == 0:
+            continue
+        o = _odds_num(_s(raw, b + kw, b + kw + ow))
+        if o is None:
+            continue
+        hi = _odds_num(_s(raw, b + kw + ow, b + kw + ow + hw)) if hw else None
+        pop = _int(_s(raw, b + kw + ow + hw, b + kw + ow + hw + pw))
+        out.append((name, kumi, o, hi, pop))
+    return out
+
+
+def cmd_live(yyyymmdd, race_ids, combo_ids, db_path):
+    """当日の速報をまとめて取り込む (自動の当日更新から呼ぶ)。
+
+    馬体重 (WH)・天候馬場の変更 (WE)・発走時刻の変更 (TC)・騎手変更 (JC)・
+    出走取消 (AV) は日付で一括、単複オッズ (O1) はレースごと、
+    全券種のオッズ (O1〜O6) は combo_ids のレースだけ。
+    """
+    conn = open_db(db_path)
+    conn.executescript(ODDS_SCHEMA)
+    jv = JVLink()
+    jv.init()
+    date = f"{yyyymmdd[:4]}-{yyyymmdd[4:6]}-{yyyymmdd[6:]}"
+    stats = {"weight": 0, "scratch": 0, "jockey": 0, "post": 0, "going": 0,
+             "odds": 0, "combo": 0}
+    try:
+        if jv.rt_open("0B11", yyyymmdd) != -1:
+            for spec, raw in jv.read_records():
+                if spec != "WH":
+                    continue
+                rid, rows = parse_wh(raw)
+                for no, w, d in rows:
+                    if w is None:
+                        continue
+                    stats["weight"] += conn.execute(
+                        "UPDATE entries SET weight=?, weight_diff=? WHERE race_id=? AND horse_no=?",
+                        (w, d, rid, no)).rowcount
+        jv.close()
+        if jv.rt_open("0B14", yyyymmdd) != -1:
+            for spec, raw in jv.read_records():
+                if spec == "TC":
+                    hm = _s(raw, 35, 39)
+                    if hm.isdigit():
+                        stats["post"] += conn.execute(
+                            "UPDATE races SET post_time=? WHERE race_id=?",
+                            (f"{hm[:2]}:{hm[2:]}", _rid(raw))).rowcount
+                elif spec == "AV":
+                    no = _int(_s(raw, 35, 37))
+                    if no:
+                        stats["scratch"] += conn.execute(
+                            "DELETE FROM entries WHERE race_id=? AND horse_no=?",
+                            (_rid(raw), no)).rowcount
+                elif spec == "JC":
+                    no = _int(_s(raw, 35, 37))
+                    futan, code = _s(raw, 73, 76), _s(raw, 76, 81)
+                    name = _s(raw, 81, 115)
+                    if no and code:
+                        stats["jockey"] += conn.execute(
+                            "UPDATE entries SET jockey_id=?, jockey_name=?, "
+                            "kinryo=COALESCE(?, kinryo) WHERE race_id=? AND horse_no=?",
+                            (code, name, int(futan) / 10.0 if futan.isdigit() and int(futan) else None,
+                             _rid(raw), no)).rowcount
+                elif spec == "WE":
+                    # 場単位 (RaceID の R が無い)。0 は「変更なし」
+                    jyo = _s(raw, 19, 21)
+                    place = JRA_PLACES.get(jyo)
+                    tenko, siba, dirt = _s(raw, 34, 35), _s(raw, 35, 36), _s(raw, 36, 37)
+                    if not place:
+                        continue
+                    if WEATHER.get(tenko):
+                        conn.execute("UPDATE races SET weather=? WHERE date=? AND place=?",
+                                     (WEATHER[tenko], date, place))
+                    for cd, cond in ((siba, "surface<>'ダ'"), (dirt, "surface='ダ'")):
+                        if GOING.get(cd):
+                            stats["going"] += conn.execute(
+                                f"UPDATE races SET going=? WHERE date=? AND place=? AND {cond}",
+                                (GOING[cd], date, place)).rowcount
+        jv.close()
+        combo = {c for c in combo_ids.split(",") if c}
+        have_pre = {r[0] for r in conn.execute(
+            "SELECT race_id FROM odds_hist WHERE tag='am' AND race_id LIKE ?", (yyyymmdd[:4] + "%",))}
+        for rid in [r for r in race_ids.split(",") if r]:
+            key = yyyymmdd + rid[4:]
+            # 前日最終・当日朝のオッズ (矢印の基準) は時系列から1度だけ取る
+            if rid not in have_pre and jv.rt_open("0B41", key) != -1:
+                recs = [o for sp, raw in jv.read_records() if sp == "O1"
+                        for o in [parse_o1(raw)] if o]
+                jv.close()
+                snaps, _ = pick_snapshots(recs)
+                for tag in ("pre", "am"):
+                    if tag in snaps:
+                        o = snaps[tag]
+                        conn.execute("INSERT OR REPLACE INTO odds_hist VALUES (?,?,?,?,?,?,?)",
+                                     (rid, tag, o["at"]) + _odds_row(o))
+            spec_name = "0B30" if rid in combo else "0B31"
+            if jv.rt_open(spec_name, key) == -1:
+                jv.close()
+                continue
+            crow = []
+            for spec, raw in jv.read_records():
+                if spec == "O1":
+                    o = parse_o1(raw)
+                    if not o or not o["win"] or not o["at"]:
+                        continue
+                    conn.execute("INSERT OR REPLACE INTO odds_live VALUES (?,?,?,?,?,?,?)",
+                                 (rid, o["at"], o["kubun"]) + _odds_row(o))
+                    for no, v in o["win"].items():
+                        conn.execute("UPDATE entries SET odds=? WHERE race_id=? AND horse_no=?",
+                                     (v, rid, no))
+                    stats["odds"] += 1
+                    at = o["at"]
+                elif spec in ("O2", "O3", "O4", "O5", "O6"):
+                    crow.extend(_combo_records(spec, raw))
+            jv.close()
+            if crow:
+                conn.execute("DELETE FROM odds_combo WHERE race_id=?", (rid,))
+                conn.executemany("INSERT OR REPLACE INTO odds_combo VALUES (?,?,?,?,?,?,?)",
+                                 [(rid, t, k, o, hi, pop, at) for t, k, o, hi, pop in crow])
+                stats["combo"] += 1
+        conn.commit()
+        log("LIVE " + " ".join(f"{k}={v}" for k, v in stats.items()))
+    finally:
+        jv.close()
+        conn.close()
+
+
+def cmd_rtprobe(spec, key, limit=6):
+    """速報データの中身を確かめる (DB には書かない)。"""
+    jv = JVLink()
+    jv.init()
+    try:
+        ret = jv.rt_open(spec, key)
+        log(f"RTOPEN {spec} {key} ret={ret}")
+        if ret == -1:
+            return
+        counts = {}
+        for s, raw in jv.read_records():
+            counts[s] = counts.get(s, 0) + 1
+            if counts[s] <= limit:
+                log(f"REC {s} len={len(raw)} head={raw[:60].decode('cp932', errors='replace')!r}")
+                if s in ("JC", "AV", "TC", "WE", "WH"):
+                    log(f"RAW {s} {raw[:200]!r}")
+        log(f"COUNTS {counts}")
+    finally:
+        jv.close()
+
+
 def main():
     args = sys.argv[1:]
     if not args:
         print(__doc__)
         sys.exit(1)
     cmd = args[0]
-    db_path = str(DB_PATH)
+    import os
+    db_path = os.environ.get("KEIBA_DB") or str(DB_PATH)
     if cmd == "probe":
         if len(args) < 2:
             log("使い方: probe <YYYYMMDD>")
@@ -1084,6 +1539,13 @@ def main():
             cmd_entries(args[1], args[2])
         else:
             cmd_rtodds(args[1], args[2])
+    elif cmd == "live":
+        cmd_live(args[1], args[2] if len(args) > 2 else "", args[3] if len(args) > 3 else "", db_path)
+    elif cmd == "oddshist":
+        # 自動更新の中から呼ぶときは自分のロックを待たない
+        cmd_oddshist(args[1], db_path, wait="--nowait" not in args)
+    elif cmd == "rtprobe":
+        cmd_rtprobe(args[1], args[2], int(args[3]) if len(args) > 3 else 6)
     elif cmd == "daylist":
         if len(args) < 2:
             log("使い方: daylist <YYYYMMDD>")
